@@ -57,6 +57,7 @@ def fetch_channel_videos(
     channel_id: str,
     max_results: int,
     log: Logger | None = None,
+    exclude_video_ids: set[str] | None = None,
 ) -> list[VideoItem]:
     try:
         channel_res = (
@@ -83,11 +84,12 @@ def fetch_channel_videos(
     if log:
         log("動画IDを収集中...")
 
-    video_ids: list[str] = []
+    excluded_ids = {v.strip() for v in (exclude_video_ids or set()) if v.strip()}
+    videos: list[VideoItem] = []
     page_token = None
 
-    while len(video_ids) < max_results:
-        per_page = min(50, max_results - len(video_ids))
+    while len(videos) < max_results:
+        per_page = 50
         try:
             playlist_res = (
                 youtube.playlistItems()
@@ -102,74 +104,84 @@ def fetch_channel_videos(
         except HttpError as exc:
             raise YouTubeServiceError(f"playlistItems.list でエラー: {exc}") from exc
 
-        items = playlist_res.get("items", [])
-        if not items:
+        playlist_items = playlist_res.get("items", [])
+        if not playlist_items:
             break
 
-        for item in items:
+        page_video_ids: list[str] = []
+        for item in playlist_items:
             video_id = item.get("contentDetails", {}).get("videoId")
             if video_id:
-                video_ids.append(video_id)
+                page_video_ids.append(video_id)
+
+        if page_video_ids:
+            try:
+                videos_res = (
+                    youtube.videos()
+                    .list(
+                        part="snippet,liveStreamingDetails",
+                        id=",".join(page_video_ids),
+                        maxResults=len(page_video_ids),
+                    )
+                    .execute()
+                )
+            except HttpError as exc:
+                raise YouTubeServiceError(f"videos.list でエラー: {exc}") from exc
+
+            items_by_id = {item.get("id", ""): item for item in videos_res.get("items", [])}
+            for video_id in page_video_ids:
+                if len(videos) >= max_results:
+                    break
+                if video_id in excluded_ids:
+                    continue
+
+                item = items_by_id.get(video_id)
+                if not item:
+                    continue
+
+                snippet = item.get("snippet", {})
+
+                # 配信予定/ライブ中は除外
+                if snippet.get("liveBroadcastContent") != "none":
+                    continue
+
+                # ライブ配信アーカイブのみ対象（開始/終了時刻があるもの）
+                live_details = item.get("liveStreamingDetails", {})
+                if not live_details.get("actualStartTime") or not live_details.get("actualEndTime"):
+                    continue
+
+                thumbs = snippet.get("thumbnails", {})
+                thumb_url = (
+                    thumbs.get("high", {}).get("url")
+                    or thumbs.get("medium", {}).get("url")
+                    or thumbs.get("default", {}).get("url")
+                    or ""
+                )
+
+                timestamp_comment = ""
+                try:
+                    timestamp_comment = extract_timestamp_comment(youtube, video_id)
+                except YouTubeServiceError as exc:
+                    if log:
+                        log(f"コメント抽出スキップ: video_id={video_id}, reason={exc}")
+
+                videos.append(
+                    VideoItem(
+                        video_id=video_id,
+                        title=snippet.get("title", ""),
+                        url=f"https://www.youtube.com/watch?v={video_id}",
+                        published_at=snippet.get("publishedAt", ""),
+                        thumbnail_url=thumb_url,
+                        tags=snippet.get("tags", []),
+                        timestamp_comment=timestamp_comment,
+                    )
+                )
 
         page_token = playlist_res.get("nextPageToken")
         if not page_token:
             break
 
-    if not video_ids:
-        return []
-
-    if log:
-        log(f"動画詳細を取得中... ({len(video_ids)}件)")
-
-    videos: list[VideoItem] = []
-    for i in range(0, len(video_ids), 50):
-        chunk_ids = video_ids[i : i + 50]
-        try:
-            videos_res = (
-                youtube.videos()
-                .list(part="snippet", id=",".join(chunk_ids), maxResults=len(chunk_ids))
-                .execute()
-            )
-        except HttpError as exc:
-            raise YouTubeServiceError(f"videos.list でエラー: {exc}") from exc
-
-        for item in videos_res.get("items", []):
-            snippet = item.get("snippet", {})
-
-            # 通常動画を優先（配信予定/ライブ中を除外）
-            if snippet.get("liveBroadcastContent") != "none":
-                continue
-
-            thumbs = snippet.get("thumbnails", {})
-            thumb_url = (
-                thumbs.get("high", {}).get("url")
-                or thumbs.get("medium", {}).get("url")
-                or thumbs.get("default", {}).get("url")
-                or ""
-            )
-
-            video_id = item.get("id", "")
-            timestamp_comment = ""
-            try:
-                timestamp_comment = extract_timestamp_comment(youtube, video_id)
-            except YouTubeServiceError as exc:
-                if log:
-                    log(f"コメント抽出スキップ: video_id={video_id}, reason={exc}")
-
-            videos.append(
-                VideoItem(
-                    video_id=video_id,
-                    title=snippet.get("title", ""),
-                    url=f"https://www.youtube.com/watch?v={video_id}",
-                    published_at=snippet.get("publishedAt", ""),
-                    thumbnail_url=thumb_url,
-                    tags=snippet.get("tags", []),
-                    timestamp_comment=timestamp_comment,
-                )
-            )
-
-    videos.sort(key=lambda x: x.published_at, reverse=True)
-    return videos[:max_results]
+    return videos
 
 
 def extract_timestamp_comment(youtube, video_id: str) -> str:
