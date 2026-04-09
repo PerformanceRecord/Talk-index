@@ -18,6 +18,8 @@ class SpreadsheetServiceError(RuntimeError):
 TIMESTAMP_WITH_LABEL_PATTERN = re.compile(
     r"(?P<ts>(?:\d{1,2}:)?\d{1,2}:\d{2})\s*(?P<label>[^\n\r]*)"
 )
+MAJOR_LINE_PATTERN = re.compile(r"^\s*(?P<ts>\d{2}:\d{2}:\d{2})\s*(?P<label>.*)$")
+MINOR_LINE_PATTERN = re.compile(r"^\s*┝\s*(?P<ts>\d{1,2}:\d{2}:\d{2})\s*(?P<label>.*)$")
 
 
 def build_gspread_client(service_account_json: str) -> gspread.Client:
@@ -154,19 +156,23 @@ def append_videos(
 
     rows: list[list[str]] = []
     for video in videos:
-        major, major_url, minor, minor_url = _extract_timestamp_fields(video.url, video.timestamp_comment)
-        rows.append(
-            [
-                video.title,
-                _to_jst_date(video.published_at),
-                video.url,
-                major,
-                major_url,
-                minor,
-                minor_url,
-                "|".join(video.tags),
-            ]
-        )
+        timestamp_rows = _extract_timestamp_rows(video.url, video.timestamp_comment)
+        if not timestamp_rows:
+            timestamp_rows = [("", "", "", "")]
+
+        for major, major_url, minor, minor_url in timestamp_rows:
+            rows.append(
+                [
+                    video.title,
+                    _to_jst_date(video.published_at),
+                    video.url,
+                    major,
+                    major_url,
+                    minor,
+                    minor_url,
+                    "|".join(video.tags),
+                ]
+            )
 
     if rows:
         sheet.append_rows(rows, value_input_option="RAW")
@@ -174,35 +180,70 @@ def append_videos(
     return len(rows)
 
 
-def _extract_timestamp_fields(video_url: str, timestamp_comment: str) -> tuple[str, str, str, str]:
-    if not timestamp_comment.strip():
-        return "", "", "", ""
+def _extract_timestamp_rows(video_url: str, timestamp_comment: str) -> list[tuple[str, str, str, str]]:
+    text = (timestamp_comment or "").strip()
+    if not text:
+        return []
 
-    items: list[tuple[str, str]] = []
-    for match in TIMESTAMP_WITH_LABEL_PATTERN.finditer(timestamp_comment):
+    rows: list[tuple[str, str, str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        major_match = MAJOR_LINE_PATTERN.match(line)
+        if major_match:
+            major_ts = _normalize_major_timestamp(major_match.group("ts") or "")
+            if major_ts:
+                label = (major_match.group("label") or "").strip()
+                major_text = f"{major_ts} {label}".strip()
+                rows.append((major_text, _build_timestamp_url(video_url, major_ts), "", ""))
+            continue
+
+        minor_match = MINOR_LINE_PATTERN.match(line)
+        if minor_match:
+            minor_raw_ts = (minor_match.group("ts") or "").strip()
+            minor_ts = _normalize_minor_timestamp(minor_raw_ts)
+            if minor_ts:
+                label = (minor_match.group("label") or "").strip()
+                minor_text = f"┝{minor_ts} {label}".strip()
+                rows.append(("", "", minor_text, _build_timestamp_url(video_url, minor_raw_ts)))
+            continue
+
+    if rows:
+        return rows
+
+    # フォールバック: 形式が完全一致しない場合でもタイムスタンプを抽出
+    for match in TIMESTAMP_WITH_LABEL_PATTERN.finditer(text):
         ts = (match.group("ts") or "").strip()
         label = (match.group("label") or "").strip()
-        if not ts:
+        normalized = _normalize_major_timestamp(ts)
+        if not normalized:
             continue
-        items.append((ts, label))
-        if len(items) >= 2:
-            break
+        major_text = f"{normalized} {label}".strip()
+        rows.append((major_text, _build_timestamp_url(video_url, normalized), "", ""))
 
-    if not items:
-        return "", "", "", ""
+    return rows
 
-    major_ts, major_label = items[0]
-    major_text = f"{major_ts} {major_label}".strip()
-    major_url = _build_timestamp_url(video_url, major_ts)
 
-    minor_text = ""
-    minor_url = ""
-    if len(items) >= 2:
-        minor_ts, minor_label = items[1]
-        minor_text = f"{minor_ts} {minor_label}".strip()
-        minor_url = _build_timestamp_url(video_url, minor_ts)
+def _normalize_major_timestamp(timestamp: str) -> str:
+    total_seconds = _timestamp_to_seconds(timestamp)
+    if total_seconds < 0:
+        return ""
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-    return major_text, major_url, minor_text, minor_url
+
+def _normalize_minor_timestamp(timestamp: str) -> str:
+    total_seconds = _timestamp_to_seconds(timestamp)
+    if total_seconds < 0:
+        return ""
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
 
 
 def _build_timestamp_url(video_url: str, timestamp: str) -> str:
@@ -216,17 +257,17 @@ def _build_timestamp_url(video_url: str, timestamp: str) -> str:
 def _timestamp_to_seconds(timestamp: str) -> int:
     raw = timestamp.strip()
     if not raw:
-        return 0
+        return -1
     parts = raw.split(":")
     try:
         nums = [int(p) for p in parts]
     except ValueError:
-        return 0
+        return -1
     if len(nums) == 2:
         return nums[0] * 60 + nums[1]
     if len(nums) == 3:
         return nums[0] * 3600 + nums[1] * 60 + nums[2]
-    return 0
+    return -1
 
 
 def _to_jst_date(published_at: str) -> str:

@@ -28,7 +28,7 @@ def load_settings() -> dict[str, str]:
         "youtube_api_key": os.getenv("YOUTUBE_API_KEY", "").strip(),
         "channel_id": os.getenv("YOUTUBE_CHANNEL_ID", "").strip(),
         "spreadsheet_id": os.getenv("SPREADSHEET_ID", "").strip(),
-        "worksheet_name": os.getenv("SPREADSHEET_WORKSHEET_NAME", "videos").strip() or "videos",
+        "worksheet_name": os.getenv("SPREADSHEET_WORKSHEET_NAME", "索引").strip() or "索引",
         "title_list_worksheet": os.getenv("TITLE_LIST_WORKSHEET_NAME", "タイトルリスト").strip() or "タイトルリスト",
         "service_account_json": os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip(),
     }
