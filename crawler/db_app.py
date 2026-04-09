@@ -59,11 +59,18 @@ def run_manual_load(request_count: int) -> dict:
         worksheet_name=settings["worksheet_name"],
     )
 
-    candidates = [
-        video
-        for video in videos
-        if video.video_id not in title_list_ids and video.video_id not in existing_ids
-    ]
+    if title_list_ids:
+        candidates = [
+            video
+            for video in videos
+            if video.video_id in title_list_ids and video.video_id not in existing_ids
+        ]
+    else:
+        candidates = [
+            video
+            for video in videos
+            if video.video_id not in existing_ids
+        ]
     targets = candidates[:request_count]
 
     appended = append_videos(

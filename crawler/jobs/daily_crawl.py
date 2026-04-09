@@ -51,11 +51,18 @@ def main() -> None:
         worksheet_name=worksheet_name,
     )
 
-    filtered_videos = [
-        video
-        for video in videos
-        if video.video_id not in title_list_ids and video.video_id not in existing_ids
-    ]
+    if title_list_ids:
+        filtered_videos = [
+            video
+            for video in videos
+            if video.video_id in title_list_ids and video.video_id not in existing_ids
+        ]
+    else:
+        filtered_videos = [
+            video
+            for video in videos
+            if video.video_id not in existing_ids
+        ]
 
     added_count = append_videos(
         client=gspread_client,
