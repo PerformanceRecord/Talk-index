@@ -18,7 +18,17 @@ def main() -> None:
     worksheet_name = os.getenv("SPREADSHEET_WORKSHEET_NAME", "videos").strip() or "videos"
     title_list_worksheet = os.getenv("TITLE_LIST_WORKSHEET_NAME", "タイトルリスト").strip() or "タイトルリスト"
     service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    max_results = int(os.getenv("DAILY_MAX_RESULTS", "50"))
+    max_results_env = os.getenv("DAILY_MAX_RESULTS", "").strip()
+    if not max_results_env:
+        raise RuntimeError("DAILY_MAX_RESULTS が未設定です。GitHub Secrets を確認してください。")
+
+    try:
+        max_results = int(max_results_env)
+    except ValueError as exc:
+        raise RuntimeError("DAILY_MAX_RESULTS は整数で指定してください。") from exc
+
+    if max_results <= 0:
+        raise RuntimeError("DAILY_MAX_RESULTS は1以上で指定してください。")
 
     if not channel_id:
         raise RuntimeError("YOUTUBE_CHANNEL_ID が未設定です。")
