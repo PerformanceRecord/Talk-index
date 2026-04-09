@@ -19,7 +19,9 @@ TIMESTAMP_WITH_LABEL_PATTERN = re.compile(
     r"(?P<ts>(?:\d{1,2}:)?\d{1,2}:\d{2})\s*(?P<label>[^\n\r]*)"
 )
 MAJOR_LINE_PATTERN = re.compile(r"^\s*(?P<ts>\d{2}:\d{2}:\d{2})\s*(?P<label>.*)$")
-MINOR_LINE_PATTERN = re.compile(r"^\s*┝\s*(?P<ts>\d{1,2}:\d{2}:\d{2})\s*(?P<label>.*)$")
+MINOR_LINE_PATTERN = re.compile(
+    r"^\s*(?P<marker>[┝└├])\s*(?P<ts>\d{1,2}:\d{2}:\d{2})\s*(?P<label>.*)$"
+)
 
 
 def build_gspread_client(service_account_json: str) -> gspread.Client:
@@ -38,6 +40,9 @@ def extract_video_id_from_url(url: str) -> str:
     value = (url or "").strip()
     if not value:
         return ""
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
+        return value
 
     if "youtu.be/" in value:
         path = urlparse(value).path.strip("/")
@@ -180,12 +185,58 @@ def append_videos(
     return len(rows)
 
 
+def append_title_list_rows(
+    client: gspread.Client,
+    spreadsheet_id: str,
+    worksheet_name: str,
+    videos: Iterable[VideoItem],
+) -> int:
+    if not spreadsheet_id.strip():
+        raise SpreadsheetServiceError("SPREADSHEET_ID が未設定です。")
+
+    book = client.open_by_key(spreadsheet_id)
+    sheet = _get_or_create_sheet(book, worksheet_name)
+
+    header = ["動画投稿日付", "動画タイトル", "動画固有ID"]
+    if not sheet.get_all_values():
+        sheet.append_row(header, value_input_option="RAW")
+
+    existing_ids = read_video_ids_from_url_column(
+        client=client,
+        spreadsheet_id=spreadsheet_id,
+        worksheet_name=worksheet_name,
+        start_row=2,
+        column_index=3,
+    )
+
+    rows: list[list[str]] = []
+    for video in videos:
+        if video.video_id in existing_ids:
+            continue
+        rows.append(
+            [
+                _to_jst_date(video.published_at),
+                video.title,
+                video.video_id,
+            ]
+        )
+
+    if rows:
+        sheet.append_rows(rows, value_input_option="RAW")
+
+    return len(rows)
+
+
 def _extract_timestamp_rows(video_url: str, timestamp_comment: str) -> list[tuple[str, str, str, str]]:
     text = (timestamp_comment or "").strip()
     if not text:
         return []
 
     rows: list[tuple[str, str, str, str]] = []
+    current_major_text = ""
+    current_major_url = ""
+    has_minor_for_current_major = False
+
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -193,22 +244,38 @@ def _extract_timestamp_rows(video_url: str, timestamp_comment: str) -> list[tupl
 
         major_match = MAJOR_LINE_PATTERN.match(line)
         if major_match:
+            if current_major_text and not has_minor_for_current_major:
+                rows.append((current_major_text, current_major_url, "", ""))
+
             major_ts = _normalize_major_timestamp(major_match.group("ts") or "")
             if major_ts:
                 label = (major_match.group("label") or "").strip()
-                major_text = f"{major_ts} {label}".strip()
-                rows.append((major_text, _build_timestamp_url(video_url, major_ts), "", ""))
+                current_major_text = f"{major_ts} {label}".strip()
+                current_major_url = _build_timestamp_url(video_url, major_ts)
+                has_minor_for_current_major = False
             continue
 
         minor_match = MINOR_LINE_PATTERN.match(line)
-        if minor_match:
+        if minor_match and current_major_text:
             minor_raw_ts = (minor_match.group("ts") or "").strip()
             minor_ts = _normalize_minor_timestamp(minor_raw_ts)
             if minor_ts:
                 label = (minor_match.group("label") or "").strip()
-                minor_text = f"┝{minor_ts} {label}".strip()
-                rows.append(("", "", minor_text, _build_timestamp_url(video_url, minor_raw_ts)))
+                marker = (minor_match.group("marker") or "┝").strip() or "┝"
+                minor_text = f"{marker}{minor_ts} {label}".strip()
+                rows.append(
+                    (
+                        current_major_text,
+                        current_major_url,
+                        minor_text,
+                        _build_timestamp_url(video_url, minor_raw_ts),
+                    )
+                )
+                has_minor_for_current_major = True
             continue
+
+    if current_major_text and not has_minor_for_current_major:
+        rows.append((current_major_text, current_major_url, "", ""))
 
     if rows:
         return rows

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from crawler.services.spreadsheet import (
+    append_title_list_rows,
     append_videos,
     build_gspread_client,
     read_existing_video_ids,
@@ -38,12 +39,19 @@ def main() -> None:
 
     gspread_client = build_gspread_client(service_account_json)
 
+    title_list_appended = append_title_list_rows(
+        client=gspread_client,
+        spreadsheet_id=spreadsheet_id,
+        worksheet_name=title_list_worksheet,
+        videos=videos,
+    )
+
     title_list_ids = read_video_ids_from_url_column(
         client=gspread_client,
         spreadsheet_id=spreadsheet_id,
         worksheet_name=title_list_worksheet,
         start_row=2,
-        column_index=1,
+        column_index=3,
     )
     existing_ids = read_existing_video_ids(
         client=gspread_client,
@@ -76,6 +84,7 @@ def main() -> None:
         "done: "
         f"channel_id={channel_id}, "
         f"fetched={len(videos)}, "
+        f"title_list_appended={title_list_appended}, "
         f"title_list_ids={len(title_list_ids)}, "
         f"existing_ids={len(existing_ids)}, "
         f"target={len(filtered_videos)}, "

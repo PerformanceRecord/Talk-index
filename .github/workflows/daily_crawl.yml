@@ -29,5 +29,6 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SPREADSHEET_WORKSHEET_NAME: ${{ secrets.SPREADSHEET_WORKSHEET_NAME }}
+          TITLE_LIST_WORKSHEET_NAME: ${{ secrets.TITLE_LIST_WORKSHEET_NAME }}
           DAILY_MAX_RESULTS: ${{ secrets.DAILY_MAX_RESULTS }}
         run: python -m crawler.jobs.daily_crawl
