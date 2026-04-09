@@ -206,6 +206,21 @@ YouTube動画情報を Google スプレッドシートへ追記します。
 7. 小見出しURL（`?t=` 付き）
 8. 自動検出タグ（YouTubeタグを `,` 連結し各タグ先頭に `#`）
 
+
+## フロントエンド（静的HTML）
+
+R2 の `index/latest.json` を読み込んで、トーク索引を閲覧できます。
+
+- 画面: `frontend/index.html`
+- ロジック: `frontend/app.js`
+- スタイル: `frontend/styles.css`
+
+### 使い方
+
+`frontend/index.html` をブラウザで開いてください。
+
+> メモ: JSON の参照先は `frontend/app.js` の `DATA_URL` です（既定: `index/latest.json`）。
+
 ## 索引シートJSONをR2へアップロード
 
 索引シートをJSON化し、Cloudflare R2 の `index/latest.json` に配置します。
