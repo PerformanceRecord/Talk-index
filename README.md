@@ -211,15 +211,15 @@ YouTube動画情報を Google スプレッドシートへ追記します。
 
 R2 の `index/latest.json` を読み込んで、トーク索引を閲覧できます。
 
-- 画面: `frontend/index.html`
-- ロジック: `frontend/app.js`
-- スタイル: `frontend/styles.css`
+- 画面: `index.html`
+- ロジック: `app.js`
+- スタイル: `styles.css`
 
 ### 使い方
 
-`frontend/index.html` をブラウザで開いてください。
+`index.html` をブラウザで開いてください。
 
-> メモ: JSON の参照先は `frontend/app.js` の `DATA_URL` です（既定: `index/latest.json`）。
+> メモ: JSON の参照先は `app.js` の `DATA_URL` です（既定: `index/latest.json`）。
 
 ## 索引シートJSONをR2へアップロード
 
