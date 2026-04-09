@@ -2,8 +2,8 @@ name: Daily YouTube Crawl
 
 on:
   schedule:
-    # 毎日 00:00 UTC = 09:00 JST
-    - cron: "0 0 * * *"
+    # 毎日 07:00 JST = 22:00 UTC（前日）
+    - cron: "0 22 * * *"
   workflow_dispatch:
 
 jobs:

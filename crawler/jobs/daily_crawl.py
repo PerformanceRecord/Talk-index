@@ -35,16 +35,7 @@ def main() -> None:
         raise RuntimeError("YOUTUBE_CHANNEL_ID が未設定です。")
 
     youtube = build_youtube_client(youtube_api_key)
-    videos = fetch_channel_videos(youtube, channel_id, max_results=max_results)
-
     gspread_client = build_gspread_client(service_account_json)
-
-    title_list_appended = append_title_list_rows(
-        client=gspread_client,
-        spreadsheet_id=spreadsheet_id,
-        worksheet_name=title_list_worksheet,
-        videos=videos,
-    )
 
     title_list_ids = read_video_ids_from_url_column(
         client=gspread_client,
@@ -59,25 +50,27 @@ def main() -> None:
         worksheet_name=worksheet_name,
     )
 
-    if title_list_ids:
-        filtered_videos = [
-            video
-            for video in videos
-            if video.video_id in title_list_ids and video.video_id not in existing_ids
-        ]
-    else:
-        filtered_videos = [
-            video
-            for video in videos
-            if video.video_id not in existing_ids
-        ]
+    skip_ids = title_list_ids | existing_ids
+    videos = fetch_channel_videos(
+        youtube,
+        channel_id,
+        max_results=max_results,
+        exclude_video_ids=skip_ids,
+    )
+
+    title_list_appended = append_title_list_rows(
+        client=gspread_client,
+        spreadsheet_id=spreadsheet_id,
+        worksheet_name=title_list_worksheet,
+        videos=videos,
+    )
 
     added_count = append_videos(
         client=gspread_client,
         spreadsheet_id=spreadsheet_id,
         worksheet_name=worksheet_name,
         channel_id=channel_id,
-        videos=filtered_videos,
+        videos=videos,
     )
 
     print(
@@ -87,7 +80,7 @@ def main() -> None:
         f"title_list_appended={title_list_appended}, "
         f"title_list_ids={len(title_list_ids)}, "
         f"existing_ids={len(existing_ids)}, "
-        f"target={len(filtered_videos)}, "
+        f"target={len(videos)}, "
         f"appended={added_count}"
     )
 
