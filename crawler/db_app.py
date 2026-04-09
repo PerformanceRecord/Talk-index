@@ -10,7 +10,7 @@ from crawler.services.spreadsheet import (
     append_videos,
     build_gspread_client,
     read_existing_video_ids,
-    read_video_ids_from_url_column,
+    read_video_ids_from_sheet_rows,
 )
 from crawler.services.youtube import YouTubeServiceError, build_youtube_client, fetch_channel_videos
 
@@ -46,12 +46,10 @@ def run_manual_load(request_count: int) -> dict:
     videos = fetch_channel_videos(youtube, settings["channel_id"], max_results=fetch_pool_size)
 
     gspread_client = build_gspread_client(settings["service_account_json"])
-    title_list_ids = read_video_ids_from_url_column(
+    title_list_ids = read_video_ids_from_sheet_rows(
         client=gspread_client,
         spreadsheet_id=settings["spreadsheet_id"],
         worksheet_name=settings["title_list_worksheet"],
-        start_row=2,
-        column_index=1,
     )
     existing_ids = read_existing_video_ids(
         client=gspread_client,

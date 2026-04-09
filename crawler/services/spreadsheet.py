@@ -62,6 +62,45 @@ def extract_video_id_from_url(url: str) -> str:
     return ""
 
 
+def _normalize_header_name(value: str) -> str:
+    return (value or "").strip().lower().replace(" ", "")
+
+
+def extract_video_id_from_row(row: list[str], header: list[str] | None = None) -> str:
+    if not row:
+        return ""
+
+    normalized_header = [_normalize_header_name(h) for h in (header or [])]
+    header_index_map: dict[str, list[int]] = {}
+    for idx, key in enumerate(normalized_header):
+        header_index_map.setdefault(key, []).append(idx)
+
+    prioritized_url_keys = ["url", "動画url", "youtube_url", "大見出しurl", "小見出しurl"]
+    for key in prioritized_url_keys:
+        for idx in header_index_map.get(key, []):
+            if len(row) <= idx:
+                continue
+            video_id = extract_video_id_from_url(row[idx])
+            if video_id:
+                return video_id
+
+    prioritized_id_keys = ["video_id", "動画固有id", "id"]
+    for key in prioritized_id_keys:
+        for idx in header_index_map.get(key, []):
+            if len(row) <= idx:
+                continue
+            video_id = extract_video_id_from_url(row[idx])
+            if video_id:
+                return video_id
+
+    for cell in row:
+        video_id = extract_video_id_from_url(cell)
+        if video_id:
+            return video_id
+
+    return ""
+
+
 def _get_or_create_sheet(book: gspread.Spreadsheet, worksheet_name: str) -> gspread.Worksheet:
     try:
         return book.worksheet(worksheet_name)
@@ -113,25 +152,39 @@ def read_existing_video_ids(
     header = values[0]
     rows = values[1:]
 
-    normalized_header = [h.strip().lower() for h in header]
-    video_id_idx = normalized_header.index("video_id") if "video_id" in normalized_header else None
-
-    url_candidates = ["url", "動画url", "youtube_url", "大見出しurl"]
-    url_idx = next((normalized_header.index(c) for c in url_candidates if c in normalized_header), None)
-
     existing_ids: set[str] = set()
     for row in rows:
-        video_id = ""
-        if video_id_idx is not None and len(row) > video_id_idx:
-            video_id = row[video_id_idx].strip()
-
-        if not video_id and url_idx is not None and len(row) > url_idx:
-            video_id = extract_video_id_from_url(row[url_idx])
-
+        video_id = extract_video_id_from_row(row=row, header=header)
         if video_id:
             existing_ids.add(video_id)
 
     return existing_ids
+
+
+def read_video_ids_from_sheet_rows(
+    client: gspread.Client,
+    spreadsheet_id: str,
+    worksheet_name: str,
+) -> set[str]:
+    if not spreadsheet_id.strip():
+        raise SpreadsheetServiceError("SPREADSHEET_ID が未設定です。")
+
+    book = client.open_by_key(spreadsheet_id)
+    sheet = _get_or_create_sheet(book, worksheet_name)
+    values = sheet.get_all_values()
+    if len(values) <= 1:
+        return set()
+
+    header = values[0]
+    rows = values[1:]
+
+    video_ids: set[str] = set()
+    for row in rows:
+        video_id = extract_video_id_from_row(row=row, header=header)
+        if video_id:
+            video_ids.add(video_id)
+
+    return video_ids
 
 
 def append_videos(
