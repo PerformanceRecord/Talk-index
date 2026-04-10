@@ -192,6 +192,21 @@ body {
   display: block;
 }
 
+.talk-video-title {
+  margin-bottom: 2px;
+  color: #334155;
+  font-size: 0.8rem;
+}
+
+.talk-video-title a {
+  color: #1d4ed8;
+  text-decoration: none;
+}
+
+.talk-video-title a:hover {
+  text-decoration: underline;
+}
+
 .tags {
   margin-top: 8px;
   display: flex;

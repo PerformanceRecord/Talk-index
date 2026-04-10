@@ -143,12 +143,17 @@ function groupTalks(rows) {
         key: row.section,
         name: row.section,
         sectionUrl: row.sectionUrl,
-        subsections: new Set(),
+        subsections: [],
       });
     }
 
     if (row.subsection) {
-      bySection.get(row.section).subsections.add(row.subsection);
+      const talk = bySection.get(row.section);
+      talk.subsections.push({
+        name: row.subsection,
+        videoTitle: row.title || "タイトルなし",
+        videoUrl: row.url,
+      });
     }
   });
 
@@ -156,7 +161,7 @@ function groupTalks(rows) {
     key: talk.key,
     name: talk.name,
     sectionUrl: talk.sectionUrl,
-    subsections: Array.from(talk.subsections),
+    subsections: talk.subsections,
   }));
 }
 
@@ -191,7 +196,7 @@ function hitTalk(talk, search) {
   if (!search.keyword) return true;
   if (search.mode === "tag") return false;
   if (includesKeyword(talk.name, search.keyword)) return true;
-  return talk.subsections.some((sub) => includesKeyword(sub, search.keyword));
+  return talk.subsections.some((sub) => includesKeyword(sub.name, search.keyword));
 }
 
 function createAnchor(href, label) {
@@ -450,8 +455,21 @@ function renderTalkCards(talks) {
     subList.className = "sub-list is-open";
     talk.subsections.forEach((sub) => {
       const li = document.createElement("li");
-      li.appendChild(document.createTextNode("- "));
-      li.appendChild(buildFormattedFragment(sub));
+
+      const videoTitle = document.createElement("div");
+      videoTitle.className = "talk-video-title";
+      videoTitle.appendChild(document.createTextNode("動画: "));
+      if (isValidHttpUrl(sub.videoUrl)) {
+        videoTitle.appendChild(createAnchor(sub.videoUrl, sub.videoTitle));
+      } else {
+        videoTitle.appendChild(document.createTextNode(sub.videoTitle));
+      }
+
+      const subsectionText = document.createElement("div");
+      subsectionText.appendChild(document.createTextNode("- "));
+      subsectionText.appendChild(buildFormattedFragment(sub.name));
+
+      li.append(videoTitle, subsectionText);
       subList.appendChild(li);
     });
     detail.appendChild(subList);
@@ -483,7 +501,6 @@ function render() {
   }
 
   const notes = [];
-  if (state.skippedRows > 0) notes.push(`${state.skippedRows}件の不正データをスキップしました`);
   if (state.randomSection) notes.push(`ランダムおすすめ: ${state.randomSection}`);
   notes.push(isVideo ? "動画単位モード" : "トーク単位モード");
   if (search.mode === "tag") notes.push("タグ検索中（#付き）");
