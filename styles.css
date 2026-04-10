@@ -100,7 +100,7 @@ body[data-ambient-tone="calm"] {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: rgba(255, 255, 255, 0.94);
+  background: transparent;
   padding: 6px 0;
   border-bottom: 1px solid #e2e8f0;
   margin-bottom: 8px;
@@ -129,7 +129,7 @@ body[data-ambient-tone="calm"] {
 .top-button {
   border: none;
   background: transparent;
-  color: #075985;
+  color: #f97316;
   font-size: 0.84rem;
   padding: 4px 2px;
 }
