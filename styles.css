@@ -254,6 +254,22 @@ body {
   border-radius: 8px;
   padding: 8px;
   font-size: 0.84rem;
+  color: #0f172a;
+}
+
+.server-status--loading {
+  background: #fef9c3;
+  border-color: #fde047;
+}
+
+.server-status--error {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+
+.server-status--ok {
+  background: #dcfce7;
+  border-color: #4ade80;
 }
 
 .menu-buttons {

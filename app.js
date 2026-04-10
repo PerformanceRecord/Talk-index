@@ -273,15 +273,19 @@ function updateTabs() {
 }
 
 function updateServerStatus(mode, shownCount = 0) {
+  refs.serverStatus.classList.remove("server-status--loading", "server-status--error", "server-status--ok");
   if (mode === "loading") {
-    refs.serverStatus.textContent = "通信状態: 読込中";
+    refs.serverStatus.textContent = "読込中";
+    refs.serverStatus.classList.add("server-status--loading");
     return;
   }
   if (mode === "error") {
-    refs.serverStatus.textContent = "通信状態: サーバーエラー";
+    refs.serverStatus.textContent = "エラー";
+    refs.serverStatus.classList.add("server-status--error");
     return;
   }
-  refs.serverStatus.textContent = `通信状態: 正常稼働中（${shownCount}件表示）`;
+  refs.serverStatus.textContent = `正常（${shownCount}件表示）`;
+  refs.serverStatus.classList.add("server-status--ok");
 }
 
 function renderNoResult() {
