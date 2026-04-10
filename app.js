@@ -144,21 +144,16 @@ function groupTalks(rows) {
         name: row.section,
         sectionUrl: row.sectionUrl,
         subsections: [],
-        subsectionKeys: new Set(),
       });
     }
 
     if (row.subsection) {
       const talk = bySection.get(row.section);
-      const uniqueKey = `${row.title}::${row.subsection}`;
-      if (!talk.subsectionKeys.has(uniqueKey)) {
-        talk.subsectionKeys.add(uniqueKey);
-        talk.subsections.push({
-          name: row.subsection,
-          videoTitle: row.title || "タイトルなし",
-          videoUrl: row.url,
-        });
-      }
+      talk.subsections.push({
+        name: row.subsection,
+        videoTitle: row.title || "タイトルなし",
+        videoUrl: row.url,
+      });
     }
   });
 
@@ -201,10 +196,7 @@ function hitTalk(talk, search) {
   if (!search.keyword) return true;
   if (search.mode === "tag") return false;
   if (includesKeyword(talk.name, search.keyword)) return true;
-  return talk.subsections.some((sub) => (
-    includesKeyword(sub.name, search.keyword)
-    || includesKeyword(sub.videoTitle, search.keyword)
-  ));
+  return talk.subsections.some((sub) => includesKeyword(sub.name, search.keyword));
 }
 
 function createAnchor(href, label) {
