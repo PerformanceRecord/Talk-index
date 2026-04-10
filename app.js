@@ -234,10 +234,13 @@ function buildVideoRecommendationEntries(videos) {
     });
     video.tags.forEach((tag) => pushTokenSet(tokenSet, tag));
 
+    const leadSection = video.sections[0] || null;
+    const leadSubsection = leadSection?.subsections?.[0]?.name || "";
+    const leadSectionName = leadSection?.name || "";
     return {
       id: video.key,
-      title: video.title,
-      subtitle: video.date || "日付なし",
+      title: leadSubsection || leadSectionName || video.title,
+      subtitle: leadSectionName || (video.date || "日付なし"),
       date: parseDateValue(video.date),
       tokens: Array.from(tokenSet).slice(0, 16),
     };
@@ -253,10 +256,11 @@ function buildTalkRecommendationEntries(talks) {
       pushTokenSet(tokenSet, sub.videoTitle);
     });
 
+    const leadSubsection = talk.subsections[0]?.name || "";
     return {
       id: talk.key,
-      title: talk.name,
-      subtitle: `小見出し ${talk.subsections.length}件`,
+      title: leadSubsection || talk.name,
+      subtitle: talk.name,
       date: "",
       tokens: Array.from(tokenSet).slice(0, 16),
     };
@@ -325,10 +329,33 @@ function scoreRecommendations(store, currentId) {
     item.overlapCount = item.overlap.size;
   });
 
-  return Array.from(scored.values())
+  const ranked = Array.from(scored.values())
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || b.overlapCount - a.overlapCount)
-    .slice(0, RECOMMEND_LIMIT);
+    .sort((a, b) => b.score - a.score || b.overlapCount - a.overlapCount);
+
+  const related = ranked.slice(0, Math.max(0, RECOMMEND_LIMIT - 1));
+  const selectedIds = new Set(related.map((item) => item.id));
+  const currentTokens = new Set(current.tokens);
+  const unrelatedPool = Array.from(store.entryMap.values()).filter((entry) => {
+    return entry.id !== currentId && !selectedIds.has(entry.id);
+  });
+  unrelatedPool.sort((a, b) => {
+    const aOverlap = a.tokens.filter((token) => currentTokens.has(token)).length;
+    const bOverlap = b.tokens.filter((token) => currentTokens.has(token)).length;
+    return aOverlap - bOverlap;
+  });
+  const unrelated = unrelatedPool[0];
+  if (unrelated) {
+    related.push({
+      id: unrelated.id,
+      title: unrelated.title,
+      subtitle: unrelated.subtitle,
+      reason: "まったく別の話題",
+      score: -1,
+      overlapCount: 0,
+    });
+  }
+  return related.slice(0, RECOMMEND_LIMIT);
 }
 
 function parseSearch(raw) {
@@ -513,7 +540,7 @@ function createRecommendationBlock(items, mode) {
 
   const title = document.createElement("h4");
   title.className = "recommend-title";
-  title.textContent = "次に見そうな話題";
+  title.textContent = "おすすめ🫵";
   wrap.appendChild(title);
 
   if (!items.length) {
@@ -849,7 +876,7 @@ function pickRandomSection() {
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
 
-  const picked = pool.slice(0, 4);
+  const picked = pool.slice(0, 3);
   state.viewMode = "talk";
   state.search = "";
   refs.search.value = "";
