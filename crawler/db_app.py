@@ -171,8 +171,9 @@ if st.session_state.manual_comment_candidates and "manual_video_item" in st.sess
         preview = str(row["text"]).replace("\n", " ")
         if len(preview) > 80:
             preview = f"{preview[:80]}..."
+        comment_type = "大本コメント" if row.get("comment_type") == "top" else "返信コメント"
         comment_options.append(
-            f"{idx + 1}. タイムスタンプ{row['timestamp_count']}個 / 👍{row['like_count']} / {preview}"
+            f"{idx + 1}. {comment_type} / タイムスタンプ{row['timestamp_count']}個 / 👍{row['like_count']} / {preview}"
         )
 
     selected_idx = st.selectbox(
