@@ -883,18 +883,22 @@ function renderTalkCards(talks) {
       subsectionText.appendChild(buildFormattedFragment(sub.name));
       li.appendChild(subsectionText);
 
-      const videoTitle = document.createElement("div");
-      videoTitle.className = "talk-video-title";
-      videoTitle.appendChild(document.createTextNode("元動画: "));
-      if (isValidHttpUrl(sub.videoUrl)) {
-        videoTitle.appendChild(createAnchor(sub.videoUrl, sub.videoTitle));
-      } else {
-        videoTitle.appendChild(document.createTextNode(sub.videoTitle));
-      }
-      li.appendChild(videoTitle);
-
       subList.appendChild(li);
     });
+
+    const firstSub = talk.subsections[0];
+    if (firstSub) {
+      const videoTitle = document.createElement("li");
+      videoTitle.className = "talk-video-title";
+      videoTitle.appendChild(document.createTextNode("元動画: "));
+      if (isValidHttpUrl(firstSub.videoUrl)) {
+        videoTitle.appendChild(createAnchor(firstSub.videoUrl, firstSub.videoTitle));
+      } else {
+        videoTitle.appendChild(document.createTextNode(firstSub.videoTitle));
+      }
+      subList.appendChild(videoTitle);
+    }
+
     detail.appendChild(subList);
     if (state.recommendation) {
       const recommendations = scoreRecommendations(state.recommendation.talk, talk.key);
