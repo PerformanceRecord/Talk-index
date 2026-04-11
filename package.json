@@ -1,0 +1,16 @@
+{
+  "name": "talk-index",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deterministic static build contract for Talk-index Cloudflare Workers Builds",
+  "engines": {
+    "node": "20.x",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "validate:build-env": "node scripts/validate-build-env.mjs",
+    "build": "node scripts/build-static.mjs",
+    "preview:check": "node scripts/preview-check.mjs",
+    "ci:build": "npm run validate:build-env && npm run build && npm run preview:check"
+  }
+}
