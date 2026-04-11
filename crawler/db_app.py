@@ -45,11 +45,18 @@ def _load_secret_env_value(key: str, default: str = "") -> str:
     return os.getenv(key, default).strip()
 
 
+def _load_spreadsheet_id() -> str:
+    secret_value = st.secrets.get("SPREADSHEET_ID")
+    if secret_value is None:
+        return ""
+    return str(secret_value).strip()
+
+
 def load_settings() -> dict[str, str]:
     return {
         "youtube_api_key": _load_secret_env_value("YOUTUBE_API_KEY"),
         "channel_id": _load_secret_env_value("YOUTUBE_CHANNEL_ID"),
-        "spreadsheet_id": _load_secret_env_value("SPREADSHEET_ID"),
+        "spreadsheet_id": _load_spreadsheet_id(),
         "worksheet_name": _load_secret_env_value("SPREADSHEET_WORKSHEET_NAME", "索引") or "索引",
         "title_list_worksheet": _load_secret_env_value("TITLE_LIST_WORKSHEET_NAME", "タイトルリスト") or "タイトルリスト",
         "service_account_json": _load_secret_env_value("GOOGLE_SERVICE_ACCOUNT_JSON"),
@@ -120,11 +127,13 @@ def run_manual_load(request_count: int) -> dict:
 
 
 settings_preview = load_settings()
-missing = [
-    key
-    for key in ["YOUTUBE_CHANNEL_ID", "SPREADSHEET_ID", "GOOGLE_SERVICE_ACCOUNT_JSON"]
-    if not _load_secret_env_value(key)
-]
+missing = []
+if not _load_secret_env_value("YOUTUBE_CHANNEL_ID"):
+    missing.append("YOUTUBE_CHANNEL_ID")
+if not _load_spreadsheet_id():
+    missing.append("SPREADSHEET_ID (st.secrets)")
+if not _load_secret_env_value("GOOGLE_SERVICE_ACCOUNT_JSON"):
+    missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
 if missing:
     st.warning(f"未設定の環境変数があります: {', '.join(missing)}")
 
