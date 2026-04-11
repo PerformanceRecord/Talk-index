@@ -6,6 +6,9 @@ const DATA_URL_CANDIDATES = configuredDataUrl
 const SEARCH_INDEX_URL_CANDIDATES = DATA_URL_CANDIDATES
   .map((url) => String(url || "").replace(/latest\.json$/, "search_index.json"))
   .filter((url, index, self) => url && self.indexOf(url) === index);
+const TALKS_URL_CANDIDATES = DATA_URL_CANDIDATES
+  .map((url) => String(url || "").replace(/latest\.json$/, "talks.json"))
+  .filter((url, index, self) => url && self.indexOf(url) === index);
 
 const state = {
   search: "",
@@ -15,6 +18,9 @@ const state = {
   searchIndexStatus: "idle",
   searchIndexError: "",
   searchIndexPromise: null,
+  talksStatus: "idle",
+  talksError: "",
+  talksPromise: null,
   skippedRows: 0,
   openVideoKeys: new Set(),
   openTalkKeys: new Set(),
@@ -23,6 +29,8 @@ const state = {
   randomTalkKeys: null,
   newVideoHighlightKeys: new Set(),
   isNewVideoHighlightVisible: true,
+  videoDetailsCache: new Map(),
+  videoDetailsPromises: new Map(),
 };
 
 const RECOMMEND_LIMIT = 3;
@@ -181,6 +189,36 @@ function extractYoutubeVideoId(url) {
 function thumbnailUrl(url) {
   const id = extractYoutubeVideoId(url);
   return id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : "";
+}
+
+function toSafeDetailId(raw, fallbackKey = "") {
+  const base = text(raw) || text(fallbackKey) || "unknown";
+  const normalized = base.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
+  return normalized || "unknown";
+}
+
+function normalizeVideoSummary(video) {
+  const url = text(video?.url);
+  const title = text(video?.title) || "タイトルなし";
+  const date = text(video?.date);
+  const id = text(video?.id) || extractYoutubeVideoId(url) || toSafeDetailId(`${title}::${date}`);
+  const tags = Array.isArray(video?.tags)
+    ? video.tags.map((tag) => normalizeTag(tag)).filter(Boolean)
+    : [];
+  return {
+    key: text(video?.key) || id,
+    id,
+    detailId: text(video?.detail_id) || id,
+    title,
+    date,
+    url,
+    tags,
+    sectionCount: Number(video?.section_count) || 0,
+    thumb: text(video?.thumb) || thumbnailUrl(url),
+    sections: Array.isArray(video?.sections) ? video.sections : null,
+    detailError: "",
+    detailLoading: false,
+  };
 }
 
 function groupVideos(rows) {
@@ -483,7 +521,8 @@ function hitVideo(video, search) {
   }
 
   if (includesKeyword(video.title, search.keyword)) return true;
-  return video.sections.some((sec) => {
+  const sections = Array.isArray(video.sections) ? video.sections : [];
+  return sections.some((sec) => {
     if (includesKeyword(sec.name, search.keyword)) return true;
     return sec.subsections.some((sub) => includesKeyword(sub.name, search.keyword));
   });
@@ -872,7 +911,8 @@ function renderCards(videos) {
     const card = document.createElement("article");
     card.className = "card";
     card.dataset.key = video.key;
-    card.dataset.tone = pickAmbientTone([video.title, ...video.tags, ...video.sections.map((sec) => sec.name)]);
+    const sectionsForTone = Array.isArray(video.sections) ? video.sections : [];
+    card.dataset.tone = pickAmbientTone([video.title, ...video.tags, ...sectionsForTone.map((sec) => sec.name)]);
     if (state.openVideoKeys.has(video.key)) card.classList.add("is-open");
     if (state.isNewVideoHighlightVisible && state.newVideoHighlightKeys.has(video.key)) card.classList.add("is-new-highlight");
 
@@ -892,7 +932,7 @@ function renderCards(videos) {
 
     const metaRow = document.createElement("div");
     metaRow.className = "card-meta-row";
-    metaRow.textContent = `${video.sections.length}件`;
+    metaRow.textContent = `${video.sectionCount || 0}件`;
 
     main.append(titleRow, metaRow);
 
@@ -920,53 +960,70 @@ function renderCards(videos) {
     const sectionList = document.createElement("div");
     sectionList.className = "section-list";
 
-    video.sections.forEach((sec) => {
-      const item = document.createElement("div");
-      item.className = "section-item";
+    if (video.detailLoading) {
+      const loading = document.createElement("p");
+      loading.className = "detail-status";
+      loading.textContent = "詳細を読込中…";
+      sectionList.appendChild(loading);
+    } else if (video.detailError) {
+      const error = document.createElement("p");
+      error.className = "detail-status";
+      error.textContent = "詳細を表示できませんでした";
+      sectionList.appendChild(error);
+    } else if (Array.isArray(video.sections)) {
+      video.sections.forEach((sec) => {
+        const item = document.createElement("div");
+        item.className = "section-item";
 
-      const head = document.createElement("div");
-      head.className = "section-head";
+        const head = document.createElement("div");
+        head.className = "section-head";
 
-      const hasSubsections = sec.subsections.length > 0;
-      let toggle;
-      if (hasSubsections) {
-        toggle = document.createElement("button");
-        toggle.className = "section-toggle";
-        toggle.type = "button";
-        toggle.setAttribute("aria-expanded", "false");
-        toggle.textContent = "▶";
-      } else {
-        toggle = document.createElement("span");
-        toggle.className = "section-toggle-placeholder";
-      }
+        const hasSubsections = sec.subsections.length > 0;
+        let toggle;
+        if (hasSubsections) {
+          toggle = document.createElement("button");
+          toggle.className = "section-toggle";
+          toggle.type = "button";
+          toggle.setAttribute("aria-expanded", "false");
+          toggle.textContent = "▶";
+        } else {
+          toggle = document.createElement("span");
+          toggle.className = "section-toggle-placeholder";
+        }
 
-      const label = sec.sectionUrl && isValidHttpUrl(sec.sectionUrl)
-        ? createFormattedAnchor(sec.sectionUrl, sec.name)
-        : createFormattedSpan(sec.name);
-      label.classList.add("section-link");
-      head.append(toggle, label);
+        const label = sec.sectionUrl && isValidHttpUrl(sec.sectionUrl)
+          ? createFormattedAnchor(sec.sectionUrl, sec.name)
+          : createFormattedSpan(sec.name);
+        label.classList.add("section-link");
+        head.append(toggle, label);
 
-      const subList = document.createElement("ul");
-      subList.className = "sub-list";
-      sec.subsections.forEach((sub) => {
-        const li = document.createElement("li");
-        li.appendChild(document.createTextNode("- "));
-        li.appendChild(buildFormattedFragment(sub.name));
-        subList.appendChild(li);
-      });
-
-      if (hasSubsections) {
-        toggle.addEventListener("click", (event) => {
-          event.stopPropagation();
-          const open = subList.classList.toggle("is-open");
-          toggle.textContent = open ? "▼" : "▶";
-          toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        const subList = document.createElement("ul");
+        subList.className = "sub-list";
+        sec.subsections.forEach((sub) => {
+          const li = document.createElement("li");
+          li.appendChild(document.createTextNode("- "));
+          li.appendChild(buildFormattedFragment(sub.name));
+          subList.appendChild(li);
         });
-      }
 
-      item.append(head, subList);
-      sectionList.appendChild(item);
-    });
+        if (hasSubsections) {
+          toggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const open = subList.classList.toggle("is-open");
+            toggle.textContent = open ? "▼" : "▶";
+            toggle.setAttribute("aria-expanded", open ? "true" : "false");
+          });
+        }
+
+        item.append(head, subList);
+        sectionList.appendChild(item);
+      });
+    } else {
+      const placeholder = document.createElement("p");
+      placeholder.className = "detail-status";
+      placeholder.textContent = "クリックで詳細を読み込みます";
+      sectionList.appendChild(placeholder);
+    }
 
     const tags = document.createElement("div");
     tags.className = "tags";
@@ -986,14 +1043,17 @@ function renderCards(videos) {
     }
 
     detail.append(sectionList, tags);
-    summary.addEventListener("click", () => {
+    summary.addEventListener("click", async () => {
       if (state.openVideoKeys.has(video.key)) {
         state.openVideoKeys.delete(video.key);
       } else {
         state.openVideoKeys.add(video.key);
+        if (!Array.isArray(video.sections)) {
+          render();
+          await ensureVideoDetailsLoaded(video);
+        }
       }
-      card.classList.toggle("is-open");
-      updateToggleAllButton();
+      render();
     });
 
     card.append(summary, detail);
@@ -1099,6 +1159,22 @@ function renderTalkCards(talks) {
 function render() {
   const search = parseSearch(state.search);
   const isVideo = state.viewMode === "video";
+  if (!isVideo && state.talksStatus === "loading") {
+    refs.notice.textContent = "トークを読込中…";
+    refs.results.innerHTML = "<p>トークを読込中…</p>";
+    updateTabs();
+    updateServerStatus("ok", 0);
+    updateToggleAllButton();
+    return;
+  }
+  if (!isVideo && state.talksStatus === "error") {
+    refs.notice.textContent = "";
+    refs.results.innerHTML = "<p>トークデータの読込に失敗しました</p>";
+    updateTabs();
+    updateServerStatus("ok", 0);
+    updateToggleAllButton();
+    return;
+  }
   let filtered = isVideo
     ? state.videos.filter((video) => hitVideo(video, search))
     : state.talks.filter((talk) => hitTalk(talk, search));
@@ -1125,7 +1201,7 @@ function render() {
   });
 }
 
-async function fetchRows() {
+async function fetchInitialVideos() {
   let lastError = "";
   updateServerStatus("loading");
 
@@ -1134,9 +1210,36 @@ async function fetchRows() {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      const videos = Array.isArray(data?.videos) ? data.videos : null;
+      if (Array.isArray(videos)) {
+        return videos.map((video) => normalizeVideoSummary(video));
+      }
+
       const rows = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : data.rows);
       if (!Array.isArray(rows)) throw new Error("JSON形式が不正です");
-      return rows;
+      const normalized = [];
+      rows.forEach((raw) => {
+        const row = normalizeRow(raw || {});
+        if (!row.title || !row.section) {
+          state.skippedRows += 1;
+          return;
+        }
+        normalized.push(row);
+      });
+      return attachDisplayTags(groupVideos(normalized)).map((video) => ({
+        ...normalizeVideoSummary({
+          id: video.key,
+          key: video.key,
+          title: video.title,
+          date: video.date,
+          url: video.url,
+          tags: video.tags,
+          section_count: video.sections.length,
+          thumb: video.thumb,
+          sections: video.sections,
+        }),
+        displayTags: video.displayTags,
+      }));
     } catch (error) {
       lastError = `${url}: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -1145,7 +1248,95 @@ async function fetchRows() {
   throw new Error(`データ取得に失敗しました。${lastError}`);
 }
 
-function pickRandomSection() {
+function buildDetailUrlCandidates(detailId) {
+  const safeId = toSafeDetailId(detailId);
+  return DATA_URL_CANDIDATES
+    .map((url) => String(url || "").replace(/latest\.json$/, `video-details/${safeId}.json`))
+    .filter((url, index, self) => url && self.indexOf(url) === index);
+}
+
+async function ensureVideoDetailsLoaded(video) {
+  if (!video || Array.isArray(video.sections)) return;
+  const detailId = toSafeDetailId(video.detailId || video.id || video.key);
+  if (state.videoDetailsCache.has(detailId)) {
+    video.sections = state.videoDetailsCache.get(detailId);
+    video.sectionCount = video.sections.length;
+    return;
+  }
+  if (state.videoDetailsPromises.has(detailId)) {
+    await state.videoDetailsPromises.get(detailId);
+    return;
+  }
+
+  video.detailLoading = true;
+  video.detailError = "";
+  const promise = (async () => {
+    let lastError = "";
+    for (const url of buildDetailUrlCandidates(detailId)) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const sections = Array.isArray(data?.sections) ? data.sections : [];
+        state.videoDetailsCache.set(detailId, sections);
+        video.sections = sections;
+        video.sectionCount = sections.length;
+        video.detailLoading = false;
+        return;
+      } catch (error) {
+        lastError = `${url}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    video.detailLoading = false;
+    video.detailError = "詳細の読込に失敗しました";
+    refs.notice.textContent = `一部データの読込に失敗しました（${lastError}）`;
+  })();
+
+  state.videoDetailsPromises.set(detailId, promise);
+  try {
+    await promise;
+  } finally {
+    state.videoDetailsPromises.delete(detailId);
+  }
+}
+
+async function loadTalksIfNeeded() {
+  if (state.talksStatus === "ready") return state.talks;
+  if (state.talksPromise) return state.talksPromise;
+
+  state.talksStatus = "loading";
+  state.talksError = "";
+  render();
+  state.talksPromise = (async () => {
+    let lastError = "";
+    for (const url of TALKS_URL_CANDIDATES) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const talks = Array.isArray(data?.talks) ? data.talks : (Array.isArray(data) ? data : []);
+        state.talks = talks;
+        state.talksStatus = "ready";
+        state.talksError = "";
+        return state.talks;
+      } catch (error) {
+        lastError = `${url}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    state.talksStatus = "error";
+    state.talksError = lastError || "talks.json の読込に失敗しました";
+    return [];
+  })();
+
+  try {
+    return await state.talksPromise;
+  } finally {
+    state.talksPromise = null;
+  }
+}
+
+async function pickRandomSection() {
+  await loadTalksIfNeeded();
   if (!state.talks.length) {
     state.randomSection = "候補なし";
     render();
@@ -1178,7 +1369,10 @@ function toggleAllByMode() {
   state.openTalkKeys = allOpen ? new Set() : new Set(state.talks.map((talk) => talk.key));
 }
 
-function switchViewMode(mode) {
+async function switchViewMode(mode) {
+  if (mode === "talk") {
+    await loadTalksIfNeeded();
+  }
   state.viewMode = mode;
   state.randomTalkKeys = null;
   state.randomSection = "";
@@ -1249,15 +1443,15 @@ async function init() {
   });
 
   refs.randomSection.addEventListener("click", () => {
-    pickRandomSection();
+    void pickRandomSection();
   });
 
   refs.tabVideo.addEventListener("click", () => {
-    switchViewMode("video");
+    void switchViewMode("video");
   });
 
   refs.tabTalk.addEventListener("click", () => {
-    switchViewMode("talk");
+    void switchViewMode("talk");
   });
 
   refs.topButton.addEventListener("click", () => {
@@ -1285,21 +1479,9 @@ async function init() {
   bindMobileScrollLock();
 
   try {
-    const rows = await fetchRows();
-    const normalized = [];
-
-    rows.forEach((raw) => {
-      const row = normalizeRow(raw || {});
-      if (!row.title || !row.section) {
-        state.skippedRows += 1;
-        return;
-      }
-      normalized.push(row);
-    });
-
-    state.videos = attachDisplayTags(groupVideos(normalized));
+    state.videos = await fetchInitialVideos();
+    state.videos = attachDisplayTags(state.videos);
     state.newVideoHighlightKeys = pickNewVideoHighlightKeys(state.videos);
-    state.talks = groupTalks(normalized);
     render();
   } catch (error) {
     refs.error.textContent = error instanceof Error ? error.message : String(error);
