@@ -141,6 +141,7 @@ streamlit run crawler/db_app.py
 
 - ページタイトル: `talk-indexDB`
 - 「読み込み実行」を押すたびに 1件（または指定件数）を取り込み
+- 記帳先は `st.secrets` の `SPREADSHEET_ID` を使用（GitHub Actions と同じIDを指定）
 - 実行ごとに成否（成功/失敗）を画面に表示
 
 ## GitHub Actions で毎日9時に自動実行（JST）
