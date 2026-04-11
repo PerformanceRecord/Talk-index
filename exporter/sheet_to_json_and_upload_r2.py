@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from hashlib import sha1
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -30,6 +31,7 @@ TOKEN_STOP_WORDS = {
     "そして",
 }
 TOKEN_PATTERN = re.compile(r"[一-龠ぁ-んァ-ヶーa-zA-Z0-9]+")
+OPENING_ENDING_SECTIONS = {"【オープニングトーク】", "【エンディングトーク】", "【開場】"}
 
 
 def _require_env(name: str) -> str:
@@ -128,7 +130,7 @@ def _build_search_entries(items: list[dict[str, object]]) -> dict[str, object]:
 
         if not section:
             continue
-        if section in {"【オープニングトーク】", "【エンディングトーク】", "【開場】"}:
+        if section in OPENING_ENDING_SECTIONS:
             continue
 
         if section not in by_talk:
@@ -148,6 +150,160 @@ def _build_search_entries(items: list[dict[str, object]]) -> dict[str, object]:
         "video": _finalize_store(by_video),
         "talk": _finalize_store(by_talk),
     }
+
+
+def _extract_youtube_video_id(url: str) -> str:
+    src = _text(url)
+    if not src:
+        return ""
+    patterns = [
+        r"youtu\.be/([A-Za-z0-9_-]{6,})",
+        r"[?&]v=([A-Za-z0-9_-]{6,})",
+        r"/shorts/([A-Za-z0-9_-]{6,})",
+    ]
+    for pattern in patterns:
+        matched = re.search(pattern, src)
+        if matched:
+            return matched.group(1)
+    return ""
+
+
+def _thumbnail_url(url: str) -> str:
+    video_id = _extract_youtube_video_id(url)
+    return f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg" if video_id else ""
+
+
+def _is_singing_item(item: dict[str, object]) -> bool:
+    title = _text(item.get("title") if isinstance(item.get("title"), str) else "")
+    tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+    return "#歌枠" in title or any(_text(str(tag)) in {"歌枠", "#歌枠"} for tag in tags)
+
+
+def _parse_date_sort_key(value: str) -> tuple[int, str]:
+    raw = _text(value)
+    if not raw:
+        return (0, "")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return (1, parsed.date().isoformat())
+    except ValueError:
+        return (0, raw)
+
+
+def _build_staged_payloads(items: list[dict[str, object]]) -> tuple[list[dict[str, object]], dict[str, dict[str, object]], list[dict[str, object]]]:
+    videos_by_key: dict[str, dict[str, object]] = {}
+    talks_by_section: dict[str, dict[str, object]] = {}
+
+    for item in items:
+        title = _text(item.get("title") if isinstance(item.get("title"), str) else "")
+        date = _text(item.get("date") if isinstance(item.get("date"), str) else "")
+        url = _text(item.get("url") if isinstance(item.get("url"), str) else "")
+        section = _text(item.get("section") if isinstance(item.get("section"), str) else "")
+        section_url = _text(item.get("section_url") if isinstance(item.get("section_url"), str) else "")
+        subsection = _text(item.get("subsection") if isinstance(item.get("subsection"), str) else "")
+        tags = [_text(str(tag)) for tag in (item.get("tags") if isinstance(item.get("tags"), list) else []) if _text(str(tag))]
+
+        if not title or not section:
+            continue
+
+        video_key = url or f"{title}::{date}"
+        video = videos_by_key.get(video_key)
+        if video is None:
+            preferred_id = _extract_youtube_video_id(url)
+            if not preferred_id:
+                fallback_src = f"{video_key}|{title}|{date}"
+                preferred_id = f"v-{sha1(fallback_src.encode('utf-8')).hexdigest()[:16]}"
+            video = {
+                "id": preferred_id,
+                "title": title or "タイトルなし",
+                "date": date,
+                "url": url,
+                "thumb": _thumbnail_url(url),
+                "tags": set(),
+                "sections": {},
+                "sort_key": _parse_date_sort_key(date),
+            }
+            videos_by_key[video_key] = video
+        video["tags"].update(tags)
+
+        sections = video["sections"]
+        if section not in sections:
+            sections[section] = {"name": section, "sectionUrl": section_url, "subsections": []}
+        if subsection:
+            sections[section]["subsections"].append({"name": subsection})
+
+        if section in OPENING_ENDING_SECTIONS:
+            continue
+        talk = talks_by_section.get(section)
+        if talk is None:
+            talk = {
+                "key": section,
+                "name": section,
+                "sectionUrl": section_url,
+                "date": "",
+                "thumb": "",
+                "hasSingingVideo": False,
+                "subsections": [],
+                "sort_key": (0, ""),
+            }
+            talks_by_section[section] = talk
+        if _parse_date_sort_key(date) > talk["sort_key"]:
+            talk["sort_key"] = _parse_date_sort_key(date)
+            talk["date"] = date
+        if not talk["thumb"] and url:
+            talk["thumb"] = _thumbnail_url(url)
+        if _is_singing_item(item):
+            talk["hasSingingVideo"] = True
+        if subsection:
+            talk["subsections"].append(
+                {
+                    "name": subsection,
+                    "videoTitle": title or "タイトルなし",
+                    "videoUrl": url,
+                }
+            )
+
+    video_details: dict[str, dict[str, object]] = {}
+    video_summaries: list[dict[str, object]] = []
+    for video in videos_by_key.values():
+        detail_id = str(video["id"])
+        section_list = list(video["sections"].values())
+        video_details[detail_id] = {"id": detail_id, "sections": section_list}
+        video_summaries.append(
+            {
+                "id": detail_id,
+                "key": detail_id,
+                "title": video["title"],
+                "date": video["date"],
+                "url": video["url"],
+                "tags": sorted(video["tags"]),
+                "section_count": len(section_list),
+                "thumb": video["thumb"],
+                "detail_id": detail_id,
+            }
+        )
+
+    video_summaries.sort(
+        key=lambda v: (_parse_date_sort_key(str(v.get("date"))), str(v.get("id"))),
+        reverse=True,
+    )
+
+    talks: list[dict[str, object]] = []
+    for talk in talks_by_section.values():
+        talks.append(
+            {
+                "key": talk["key"],
+                "name": talk["name"],
+                "sectionUrl": talk["sectionUrl"],
+                "date": talk["date"],
+                "thumb": talk["thumb"],
+                "hasSingingVideo": talk["hasSingingVideo"],
+                "subsections": talk["subsections"],
+            }
+        )
+    talks.sort(key=lambda t: (_parse_date_sort_key(str(t.get("date"))), str(t.get("key"))), reverse=True)
+
+    return video_summaries, video_details, talks
 
 
 def main() -> None:
@@ -205,10 +361,17 @@ def main() -> None:
 
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
+    video_summaries, video_details_map, talks = _build_staged_payloads(items)
+
     latest_payload = {
         "version": 1,
         "generated_at": generated_at,
-        "items": items,
+        "videos": video_summaries,
+    }
+    talks_payload = {
+        "version": 1,
+        "generated_at": generated_at,
+        "talks": talks,
     }
 
     search_store = _build_search_entries(items)
@@ -240,6 +403,19 @@ def main() -> None:
             Body=json.dumps(search_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
             ContentType="application/json; charset=utf-8",
         )
+        s3.put_object(
+            Bucket=r2_bucket_name,
+            Key="index/talks.json",
+            Body=json.dumps(talks_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            ContentType="application/json; charset=utf-8",
+        )
+        for detail_id, detail_payload in sorted(video_details_map.items()):
+            s3.put_object(
+                Bucket=r2_bucket_name,
+                Key=f"index/video-details/{detail_id}.json",
+                Body=json.dumps(detail_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                ContentType="application/json; charset=utf-8",
+            )
     except Exception as exc:
         raise RuntimeError("R2 へのアップロードに失敗しました。認証情報・バケット名・権限を確認してください。") from exc
 
@@ -247,10 +423,13 @@ def main() -> None:
         "done: "
         f"worksheet={worksheet_name}, "
         f"items={len(items)}, "
+        f"videos={len(video_summaries)}, "
+        f"video_details={len(video_details_map)}, "
+        f"talks={len(talks)}, "
         f"search_video_entries={len(search_store['video']['entries'])}, "
         f"search_talk_entries={len(search_store['talk']['entries'])}, "
         f"bucket={r2_bucket_name}, "
-        "keys=index/latest.json,index/search_index.json"
+        "keys=index/latest.json,index/talks.json,index/video-details/*.json,index/search_index.json"
     )
 
 
