@@ -351,12 +351,19 @@ function scoreRecommendations(store, currentId) {
   const unrelatedPool = Array.from(store.entryMap.values()).filter((entry) => {
     return entry.id !== currentId && !selectedIds.has(entry.id);
   });
-  unrelatedPool.sort((a, b) => {
-    const aOverlap = a.tokens.filter((token) => currentTokens.has(token)).length;
-    const bOverlap = b.tokens.filter((token) => currentTokens.has(token)).length;
-    return aOverlap - bOverlap;
-  });
-  const unrelated = unrelatedPool[0];
+  const unrelatedCandidates = unrelatedPool.map((entry) => ({
+    entry,
+    overlap: entry.tokens.filter((token) => currentTokens.has(token)).length,
+  }));
+  unrelatedCandidates.sort((a, b) => a.overlap - b.overlap);
+  const minOverlap = unrelatedCandidates[0]?.overlap;
+  const lowestOverlapPool = unrelatedCandidates
+    .filter((item) => item.overlap === minOverlap)
+    .map((item) => item.entry);
+  const randomIndex = lowestOverlapPool.length > 0
+    ? Math.floor(Math.random() * lowestOverlapPool.length)
+    : -1;
+  const unrelated = randomIndex >= 0 ? lowestOverlapPool[randomIndex] : null;
   if (unrelated) {
     related.push({
       id: unrelated.id,
@@ -787,7 +794,20 @@ function createRecommendationBlock(items, mode) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "recommend-button";
-    button.innerHTML = `<span class="recommend-main">${item.title}</span><span class="recommend-sub">${item.subtitle}</span><span class="recommend-reason">${item.reason}</span>`;
+
+    const main = document.createElement("span");
+    main.className = "recommend-main";
+    main.appendChild(buildFormattedFragment(item.title));
+
+    const sub = document.createElement("span");
+    sub.className = "recommend-sub";
+    sub.appendChild(buildFormattedFragment(item.subtitle));
+
+    const reason = document.createElement("span");
+    reason.className = "recommend-reason";
+    reason.appendChild(buildFormattedFragment(item.reason));
+
+    button.append(main, sub, reason);
     button.addEventListener("click", () => {
       openCardFromRecommendation(mode, item.id);
     });
