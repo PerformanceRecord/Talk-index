@@ -258,12 +258,12 @@ def _collect_timestamp_comment_rows(response: dict) -> list[dict[str, str | int]
     results: list[dict[str, str | int]] = []
     for item in response.get("items", []):
         top_level_snippet = item.get("snippet", {}).get("topLevelComment", {}).get("snippet", {})
-        _append_timestamp_comment_row(results, top_level_snippet)
+        _append_timestamp_comment_row(results, top_level_snippet, comment_type="top")
 
         reply_items = item.get("replies", {}).get("comments", [])
         for reply in reply_items:
             reply_snippet = reply.get("snippet", {})
-            _append_timestamp_comment_row(results, reply_snippet)
+            _append_timestamp_comment_row(results, reply_snippet, comment_type="reply")
 
     return results
 
@@ -271,6 +271,7 @@ def _collect_timestamp_comment_rows(response: dict) -> list[dict[str, str | int]
 def _append_timestamp_comment_row(
     results: list[dict[str, str | int]],
     snippet: dict,
+    comment_type: str,
 ) -> None:
     text = (snippet.get("textOriginal", "") or "").strip()
     if not text:
@@ -285,6 +286,7 @@ def _append_timestamp_comment_row(
             "text": text,
             "timestamp_count": len(set(timestamps)),
             "like_count": int(snippet.get("likeCount", 0) or 0),
+            "comment_type": comment_type,
         }
     )
 
