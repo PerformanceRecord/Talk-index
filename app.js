@@ -31,6 +31,9 @@ const state = {
   isNewVideoHighlightVisible: true,
   videoDetailsCache: new Map(),
   videoDetailsPromises: new Map(),
+  talkRecommendationCache: new Map(),
+  talkSearchDocuments: null,
+  lastFallbackTalkKey: "",
 };
 
 const RECOMMEND_LIMIT = 3;
@@ -58,6 +61,15 @@ const TOKEN_STOP_WORDS = new Set([
   "雑談の話",
   "について",
   "そして",
+]);
+
+
+const TALK_RECOMMENDATION_WORD_COUNT = 2;
+const TALK_RECOMMENDATION_MIN_SCORE = 3;
+const TALK_RECOMMENDATION_STOP_WORDS = new Set([
+  "話", "こと", "これ", "それ", "もの", "やつ", "ほんま", "まじ", "やばい",
+  "すごい", "無理", "なるほど", "感じ", "みたい", "とき", "時", "自分", "相手", "返事",
+  "今回", "前回", "最近", "雑談", "配信", "トーク", "について", "の話",
 ]);
 
 const refs = {
@@ -322,6 +334,233 @@ function hasSingingTag(tags) {
 
 function isSingingVideoRow(row) {
   return text(row.title).includes("#歌枠") || hasSingingTag(row.tags);
+}
+
+
+function normalizeRecommendationText(raw) {
+  return text(raw)
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, " ")
+    .replace(/[wｗ笑]+/g, " ")
+    .replace(/[!！?？。\.、,，・~〜]+/g, " ")
+    .replace(/[「」『』【】()（）\[\]<>＜＞]/g, " ")
+    .replace(/(について|に関して|の話|という話)$/g, "")
+    .trim();
+}
+
+function normalizeRecommendationToken(rawToken) {
+  let token = normalizeRecommendationText(rawToken);
+  if (!token) return "";
+  token = token.replace(/(について|に関して|の話|という話)$/g, "");
+  if (TOKEN_STOP_WORDS.has(token) || TALK_RECOMMENDATION_STOP_WORDS.has(token)) return "";
+  if (token.length <= 1 && !/^\d+$/.test(token)) return "";
+  if (/^\d+$/.test(token)) return "";
+  return token;
+}
+
+function extractRecommendationTokens(raw) {
+  const src = normalizeRecommendationText(raw);
+  if (!src) return [];
+  const words = src.match(/[一-龠ぁ-んァ-ヶーa-zA-Z0-9]+/g) || [];
+  const unique = new Set();
+  words.forEach((word) => {
+    const token = normalizeRecommendationToken(word);
+    if (token) unique.add(token);
+  });
+  return Array.from(unique);
+}
+
+function buildTalkCandidatePool(talk) {
+  const scoreMap = new Map();
+  const subCounts = new Map();
+
+  const majorTokens = extractRecommendationTokens(talk.name);
+  majorTokens.forEach((token) => {
+    scoreMap.set(token, (scoreMap.get(token) || 0) + 6);
+  });
+
+  const subsectionTokens = [];
+  talk.subsections.forEach((sub) => {
+    const tokens = extractRecommendationTokens(sub.name);
+    subsectionTokens.push(...tokens);
+    const seen = new Set(tokens);
+    seen.forEach((token) => {
+      subCounts.set(token, (subCounts.get(token) || 0) + 1);
+      scoreMap.set(token, (scoreMap.get(token) || 0) + 3);
+    });
+  });
+
+  subCounts.forEach((count, token) => {
+    if (count >= 2) scoreMap.set(token, (scoreMap.get(token) || 0) + (count - 1));
+  });
+
+  const scored = Array.from(scoreMap.entries())
+    .map(([token, score]) => ({ token, score }))
+    .sort((a, b) => b.score - a.score || a.token.localeCompare(b.token));
+
+  return {
+    majorTokens,
+    subsectionTokens: Array.from(new Set(subsectionTokens)),
+    scored,
+  };
+}
+
+function pickQueryWordFromPool(candidates, usedWords) {
+  const filtered = candidates.filter((item) => !usedWords.has(item.token));
+  if (!filtered.length) return "";
+  const topScore = filtered[0].score;
+  const strongPool = filtered.filter((item) => item.score >= Math.max(1, topScore - 2)).slice(0, 5);
+  if (!strongPool.length) return "";
+  const picked = strongPool[Math.floor(Math.random() * strongPool.length)];
+  return picked?.token || "";
+}
+
+function chooseTalkRecommendationQueryWords(talk) {
+  const pool = buildTalkCandidatePool(talk);
+  const usedWords = new Set();
+  const words = [];
+
+  const majorRanked = pool.scored.filter((item) => pool.majorTokens.includes(item.token));
+  const majorWord = pickQueryWordFromPool(majorRanked, usedWords);
+  if (majorWord) {
+    words.push(majorWord);
+    usedWords.add(majorWord);
+  }
+
+  const subRanked = pool.scored.filter((item) => pool.subsectionTokens.includes(item.token));
+  const subWord = pickQueryWordFromPool(subRanked, usedWords);
+  if (subWord) {
+    words.push(subWord);
+    usedWords.add(subWord);
+  }
+
+  while (words.length < TALK_RECOMMENDATION_WORD_COUNT) {
+    const fallbackWord = pickQueryWordFromPool(pool.scored, usedWords);
+    if (!fallbackWord) break;
+    words.push(fallbackWord);
+    usedWords.add(fallbackWord);
+  }
+
+  return words.slice(0, TALK_RECOMMENDATION_WORD_COUNT);
+}
+
+function buildTalkSearchDocumentsIfNeeded() {
+  if (state.talkSearchDocuments) return state.talkSearchDocuments;
+  state.talkSearchDocuments = state.talks.map((talk) => {
+    const sourceTitle = text(talk.subsections?.[0]?.videoTitle);
+    return {
+      key: talk.key,
+      talk,
+      date: parseDateValue(talk.date),
+      headingText: normalizeRecommendationText(talk.name),
+      subsectionText: normalizeRecommendationText((talk.subsections || []).map((sub) => sub.name).join(" ")),
+      sourceTitleText: normalizeRecommendationText(sourceTitle),
+      sourceTitle,
+      subsectionCount: Array.isArray(talk.subsections) ? talk.subsections.length : 0,
+    };
+  });
+  return state.talkSearchDocuments;
+}
+
+function searchBestTalkByWord(word, currentTalkKey, usedTalkKeys) {
+  const documents = buildTalkSearchDocumentsIfNeeded();
+  const normalizedWord = normalizeRecommendationToken(word);
+  if (!normalizedWord) return null;
+
+  const scored = [];
+  documents.forEach((doc) => {
+    if (doc.key === currentTalkKey || usedTalkKeys.has(doc.key)) return;
+    let score = 0;
+    if (doc.headingText.includes(normalizedWord)) score += 5;
+    if (doc.subsectionText.includes(normalizedWord)) score += 3;
+    if (doc.sourceTitleText.includes(normalizedWord)) score += 1;
+    if (score < TALK_RECOMMENDATION_MIN_SCORE) return;
+    scored.push({ doc, score });
+  });
+
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score);
+  const topScore = scored[0].score;
+  const top = scored.filter((item) => item.score === topScore);
+  top.sort((a, b) => {
+    if (a.doc.date && b.doc.date && a.doc.date !== b.doc.date) return a.doc.date.localeCompare(b.doc.date);
+    if (a.doc.date && !b.doc.date) return -1;
+    if (!a.doc.date && b.doc.date) return 1;
+    return a.doc.key.localeCompare(b.doc.key);
+  });
+
+  return top[0]?.doc || null;
+}
+
+function pickFallbackTalk(currentTalk, usedTalkKeys) {
+  const currentDate = parseDateValue(currentTalk.date);
+  const documents = buildTalkSearchDocumentsIfNeeded().filter((doc) => {
+    if (doc.key === currentTalk.key || usedTalkKeys.has(doc.key)) return false;
+    if (currentDate && doc.date && doc.date > currentDate) return false;
+    return true;
+  });
+
+  if (!documents.length) return null;
+
+  documents.sort((a, b) => {
+    if (state.lastFallbackTalkKey) {
+      if (a.key === state.lastFallbackTalkKey) return 1;
+      if (b.key === state.lastFallbackTalkKey) return -1;
+    }
+    if (a.subsectionCount !== b.subsectionCount) return b.subsectionCount - a.subsectionCount;
+    if (a.date && b.date && a.date !== b.date) return a.date.localeCompare(b.date);
+    if (a.date && !b.date) return -1;
+    if (!a.date && b.date) return 1;
+    return a.key.localeCompare(b.key);
+  });
+
+  const picked = documents[0] || null;
+  if (picked) state.lastFallbackTalkKey = picked.key;
+  return picked;
+}
+
+function formatTalkRecommendationSubtitle(doc) {
+  const dateLabel = doc.date || text(doc.talk?.date);
+  const source = doc.sourceTitle || "元動画情報なし";
+  return dateLabel ? `${source} (${dateLabel})` : source;
+}
+
+function buildTalkRecommendationsForTalk(talk) {
+  const cached = state.talkRecommendationCache.get(talk.key);
+  if (cached) return cached;
+
+  const usedTalkKeys = new Set();
+  const recommendations = [];
+  const words = chooseTalkRecommendationQueryWords(talk);
+
+  words.forEach((word) => {
+    const hit = searchBestTalkByWord(word, talk.key, usedTalkKeys);
+    if (!hit) return;
+    usedTalkKeys.add(hit.key);
+    recommendations.push({
+      id: hit.key,
+      title: hit.talk.name || "タイトルなし",
+      subtitle: formatTalkRecommendationSubtitle(hit),
+      reason: `${word}といえば……`,
+    });
+  });
+
+  const targetCount = Math.min(2, Math.max(0, state.talks.length - 1));
+  while (recommendations.length < targetCount) {
+    const fallback = pickFallbackTalk(talk, usedTalkKeys);
+    if (!fallback) break;
+    usedTalkKeys.add(fallback.key);
+    recommendations.push({
+      id: fallback.key,
+      title: fallback.talk.name || "タイトルなし",
+      subtitle: formatTalkRecommendationSubtitle(fallback),
+      reason: "こんな話題もおすすめ",
+    });
+  }
+
+  const finalItems = recommendations.slice(0, RECOMMEND_LIMIT);
+  state.talkRecommendationCache.set(talk.key, finalItems);
+  return finalItems;
 }
 
 function groupTalks(rows) {
@@ -1125,8 +1364,8 @@ function renderTalkCards(talks) {
     }
 
     detail.appendChild(subList);
-    if (state.recommendation) {
-      const recommendations = scoreRecommendations(state.recommendation.talk, talk.key);
+    if (state.openTalkKeys.has(talk.key)) {
+      const recommendations = buildTalkRecommendationsForTalk(talk);
       detail.appendChild(createRecommendationBlock(recommendations, "talk"));
     }
 
@@ -1332,6 +1571,8 @@ async function loadTalksIfNeeded() {
           ? data.talks
           : (Array.isArray(data) ? data : (() => { throw new Error("talks.json の形式が不正です"); })());
         state.talks = talks;
+        state.talkRecommendationCache = new Map();
+        state.talkSearchDocuments = null;
         state.talksStatus = "ready";
         state.talksError = "";
         return state.talks;
@@ -1343,6 +1584,8 @@ async function loadTalksIfNeeded() {
       const fallbackTalks = await loadTalksFromLegacyLatest();
       if (Array.isArray(fallbackTalks) && fallbackTalks.length) {
         state.talks = fallbackTalks;
+        state.talkRecommendationCache = new Map();
+        state.talkSearchDocuments = null;
         state.talksStatus = "ready";
         state.talksError = "";
         refs.notice.textContent = "talks.json が無いため latest.json 形式から代替表示中です";
