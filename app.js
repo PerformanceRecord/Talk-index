@@ -1689,6 +1689,23 @@ function bindMobileScrollLock() {
 async function init() {
   refreshAmbientViewport();
   initAmbientScene();
+  const SEARCH_INPUT_DELAY_MS = 300;
+  let searchInputTimer = null;
+  let isComposing = false;
+
+  const applySearchInput = (value) => {
+    state.search = text(value);
+    state.randomTalkKeys = null;
+    render();
+  };
+
+  const scheduleSearchInput = (value) => {
+    if (searchInputTimer) clearTimeout(searchInputTimer);
+    searchInputTimer = setTimeout(() => {
+      searchInputTimer = null;
+      applySearchInput(value);
+    }, SEARCH_INPUT_DELAY_MS);
+  };
 
   refs.search.addEventListener("focus", () => {
     if (state.searchIndexStatus === "idle") {
@@ -1696,13 +1713,25 @@ async function init() {
     }
   }, { once: false });
 
+  refs.search.addEventListener("compositionstart", () => {
+    isComposing = true;
+  });
+
+  refs.search.addEventListener("compositionend", (event) => {
+    isComposing = false;
+    scheduleSearchInput(event.target.value);
+  });
+
   refs.search.addEventListener("input", (event) => {
-    state.search = text(event.target.value);
-    state.randomTalkKeys = null;
-    render();
+    if (isComposing) return;
+    scheduleSearchInput(event.target.value);
   });
 
   refs.clearSearch.addEventListener("click", () => {
+    if (searchInputTimer) {
+      clearTimeout(searchInputTimer);
+      searchInputTimer = null;
+    }
     state.search = "";
     refs.search.value = "";
     state.randomTalkKeys = null;
