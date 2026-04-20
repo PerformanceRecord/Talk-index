@@ -1,55 +1,69 @@
 # Talk-index
 
-YouTubeチャンネルの動画情報を取得し、将来的に検索しやすいインデックスへ育てるプロジェクトです。
+Talk-index は、YouTube の配信情報を **収集 → スプレッドシート蓄積 → JSON 生成 → Cloudflare R2 配信 → 静的フロントで閲覧** するための運用リポジトリです。
 
-## 現在の実装フェーズ
+現状は、Python クローラー・JSON エクスポーター・静的フロント・GitHub Actions が連携して稼働する構成です。
 
-現在は **Phase 1: Streamlit ベースの YouTube動画取得ツール (MVP)** を実装しています。  
-この段階では、まず「動画一覧を安定して取得・確認できること」を優先します。
+## 全体フロー（現行）
 
----
+1. `crawler/jobs/daily_crawl.py` が YouTube から動画情報を取得し、Google スプレッドシートへ追記
+2. `exporter/sheet_to_json_and_upload_r2.py` がシートを JSON 化して R2 へアップロード
+3. `index.html` + `app.js` が R2 の JSON を読み、ブラウザで一覧/検索表示
 
-## このMVPでできること
-
-- チャンネルID または チャンネルURL を入力
-- YouTube Data API v3 で動画一覧を取得（通常動画を優先）
-- 取得項目を表で表示
-- JSON / CSV でダウンロード
-- エラー時に原因を表示
-
-### 取得項目
-
-- `video_id`
-- `title`
-- `url`
-- `published_at`
-- `thumbnail_url`
-- `tags`（取得できる場合）
-- `timestamp_comment`（コメント1ページ目からタイムスタンプを含む代表コメント）
-
----
-
-## ディレクトリ構成（現時点）
+## 現在の構成
 
 ```text
-/
+.
 ├─ crawler/
-│  ├─ app.py                 # Streamlit エントリポイント
-│  ├─ config.py              # 環境変数・設定値
-│  ├─ models.py              # データモデル
-│  ├─ utils.py               # 補助処理
-│  └─ services/
-│     └─ youtube.py          # YouTube API 呼び出し
-├─ requirements.txt
-├─ .env.example
-└─ README.md
+│  ├─ app.py                         # Streamlit: 取得確認・JSON/CSVダウンロード
+│  ├─ db_app.py                      # Streamlit: 手動記帳ページ（talk-indexDB）
+│  ├─ config.py                      # 環境変数設定
+│  ├─ models.py                      # VideoItem モデル
+│  ├─ utils.py                       # URL補助・JSON/CSV変換
+│  ├─ services/
+│  │  ├─ youtube.py                  # YouTube Data API 呼び出し
+│  │  └─ spreadsheet.py              # スプレッドシート入出力
+│  └─ jobs/
+│     └─ daily_crawl.py              # 日次クロール実行
+├─ exporter/
+│  └─ sheet_to_json_and_upload_r2.py # Sheet→JSON→R2
+├─ scripts/
+│  ├─ build-static.mjs               # dist 生成
+│  ├─ validate-build-env.mjs         # build前提チェック
+│  └─ preview-check.mjs              # build成果物チェック
+├─ .github/workflows/
+│  ├─ daily_crawl.yml
+│  ├─ upload_index_json_to_r2.yml
+│  └─ cloudflare_build_contract.yml
+├─ docs/
+│  └─ r2_operation_guide.md
+├─ index.html
+├─ app.js
+├─ styles.css
+├─ package.json
+└─ requirements.txt
 ```
 
----
+## 主要コンポーネント
 
-## セットアップ
+- `crawler/app.py`  
+  チャンネル ID/URL から動画を取得して画面表示し、JSON/CSV をダウンロードできます。
+- `crawler/db_app.py`  
+  `talk-indexDB` ページ。手動でコメント候補確認・単発記帳・一括取り込みができます。
+- `crawler/jobs/daily_crawl.py`  
+  日次運用ジョブ本体。重複を避けつつ、タイトルリスト/索引シートへ追記します。
+- `exporter/sheet_to_json_and_upload_r2.py`  
+  シート内容を `latest.json` / `talks.json` / `search_index.json` / `video-details/*.json` に変換し、R2 に配置します。
+- `index.html` / `app.js` / `styles.css`  
+  JSON を段階読み込みして表示する静的フロントです。
+- `scripts/*.mjs`  
+  Cloudflare Build で使う静的 build 契約（前提確認→build→出力検証）です。
+- `.github/workflows/*.yml`  
+  日次クロール、R2 反映、静的 build 契約チェックを自動実行します。
 
-### 1) 依存関係インストール
+## ローカル実行
+
+### 1) Python 依存の導入
 
 ```bash
 python -m venv .venv
@@ -57,337 +71,89 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) 環境変数設定
+必要な環境変数は `.env.example` を参考に設定してください（例: `YOUTUBE_API_KEY`）。
 
-```bash
-cp .env.example .env
-```
-
-`.env` に YouTube API キーを設定してください。
-
-```env
-YOUTUBE_API_KEY=your_api_key_here
-DEFAULT_MAX_RESULTS=20
-MAX_ALLOWED_RESULTS=200
-```
-
-### 3) 起動
+### 2) クローラー画面（MVP）
 
 ```bash
 streamlit run crawler/app.py
 ```
 
-ブラウザで表示された画面から、チャンネルIDまたはURLを入力して実行します。
-
----
-
-## 使い方（最短）
-
-1. `チャンネルID または URL` を入力
-2. `取得件数上限` を指定
-3. `取得する` を押す
-4. 結果を確認し、必要なら JSON / CSV をダウンロード
-
----
-
-## 既知の制約
-
-- APIクォータ制限により、大量取得は失敗する場合があります
-- URL形式によってはチャンネル解決に失敗する場合があります
-- ライブ配信や配信予定は除外（通常動画優先）
-
----
-
-## 将来構想（Roadmap）
-
-以下はこのMVPの次フェーズとして予定している内容です（まだ未実装）。
-
-1. Googleスプレッドシート蓄積
-2. JSON生成バッチ
-3. Cloudflare R2 への配信
-4. 静的 HTML/JavaScript で検索・閲覧
-5. GitHub Actions で定期実行
-
-### 将来の想定ディレクトリ（planned）
-
-```text
-/
-├─ crawler/                  # Python: 収集・解析
-├─ exporter/                 # Python: Sheet→JSON
-├─ frontend/                 # 静的HTML/CSS/JS
-├─ gas/                      # 補助用GAS（必要時のみ）
-├─ .github/workflows/        # 定期実行
-└─ docs/                     # 設計・運用メモ
-```
-
----
-
-## 設計メモ（将来向け）
-
-- 差分更新、再試行、バックフィル戦略は維持
-- ただし現在フェーズでは、まず動画一覧取得の信頼性を優先
-- 未実装要素は段階的に追加
-
----
-
-
-### 手動データ読み込みページ（talk-indexDB）
-
-定刻の GitHub Actions とは別に、手動で差分取り込みを実行できます。
+### 3) 手動記帳画面（talk-indexDB）
 
 ```bash
 streamlit run crawler/db_app.py
 ```
 
-- ページタイトル: `talk-indexDB`
-- 「読み込み実行」を押すたびに 1件（または指定件数）を取り込み
-- 記帳先は `st.secrets` の `SPREADSHEET_ID` を使用（GitHub Actions と同じIDを指定）
-- `SPREADSHEET_ID` は「スプレッドシートID」またはスプレッドシートURLのどちらでも指定可能（内部でIDへ正規化）
-- 画面上の「スプレッドシートID または URL（手動指定）」に入力した値がある場合、`st.secrets` / 環境変数より優先して使用
-- 実行ごとに成否（成功/失敗）を画面に表示
-
-## GitHub Actions で毎日9時に自動実行（JST）
-
-このリポジトリは、毎日 9:00（JST）にクローラーを実行し、
-YouTube動画情報を Google スプレッドシートへ追記します。
-
-- workflow: `.github/workflows/daily_crawl.yml`
-- 実行スクリプト: `python -m crawler.jobs.daily_crawl`
-
-### 必要な GitHub Secrets（daily crawl）
-
-必須:
-- `YOUTUBE_API_KEY`
-- `YOUTUBE_CHANNEL_ID`
-- `SPREADSHEET_ID`
-- `GOOGLE_SERVICE_ACCOUNT_JSON`
-- `DAILY_MAX_RESULTS`（運用中は `1` 推奨）
-
-補足:
-- `SPREADSHEET_ID` はスプレッドシートID（推奨）か、`https://docs.google.com/spreadsheets/d/...` 形式URLを指定できます。
-
-任意:
-- `TITLE_LIST_WORKSHEET_NAME`（未指定時: `タイトルリスト`）
-- `SPREADSHEET_WORKSHEET_NAME`（未指定時: `索引`）
-
-### 差分抽出ルール（現行仕様）
-
-- `TITLE_LIST_WORKSHEET_NAME` シートの2行目以降を参照し、**ID列またはURL列**から動画IDを抽出します。
-- URL列が入っている場合は、URLから動画IDへ変換して扱います。
-- タイトルリストに1件以上IDがある場合は、**そのIDに一致する動画だけ**を対象にします。
-- `SPREADSHEET_WORKSHEET_NAME`（索引シート）に既存の動画IDがある場合は重複追加しません。
-- タイトルリストが空の場合は、チャンネル最新動画から既存IDを除外して追記します。
-
-### タイトルリストシートへの書き込み
-
-`TITLE_LIST_WORKSHEET_NAME`（タイトルリスト）には、2行目以降へ次の順で追記します。
-
-1. 動画投稿日付（JST日付）
-2. 動画タイトル
-3. 動画固有ID
-
-### コメントのタイムスタンプ抽出
-
-- 対象: 各動画のコメント1ページ目（topLevelComment）
-- `0:32` / `12:05` / `1:02:33` のようなタイムスタンプを含むコメントのみ候補化
-- 代表コメントは次の優先順で1件選択
-  1. タイムスタンプ種類数が多い
-  2. いいね数が多い
-  3. コメント本文が長い
-- 代表コメント内のタイムスタンプ行を索引シートへ展開
-  - 大見出し: タイムスタンプ除去後の文字列
-  - 小見出し: `┝` / `└` とタイムスタンプ除去後の文字列
-- タイムスタンプが無い動画は、大見出し/小見出しを空欄で追記
-
-### 索引シートへの書き込み列
-
-`SPREADSHEET_WORKSHEET_NAME`（索引）には、2行目以降へ次の列順で追記します。
-
-1. タイトル
-2. 日付（JST日付）
-3. URL
-4. 大見出し
-5. 大見出しURL（`?t=` 付き）
-6. 小見出し
-7. 小見出しURL（`?t=` 付き）
-8. 自動検出タグ（YouTubeタグを `,` 連結し各タグ先頭に `#`）
+### 4) 静的フロント確認
 
-
-## フロントエンド（静的HTML）
-
-R2 のJSONを段階的に読み込んで、初期表示を軽くしたトーク索引を閲覧できます。
-
-- 画面: `index.html`
-- ロジック: `app.js`
-- スタイル: `styles.css`
-
-### 使い方
-
-`index.html` をブラウザで開いてください。
-
-> メモ: JSON の参照先は `index.html` の `window.TALK_INDEX_DATA_URL`（未設定時は `index/latest.json` など）です。
->
-> `file://` で `index.html` を直接開くと、ブラウザ制限（CORS）で `Failed to fetch` になる場合があります。  
-> その場合はローカルサーバーで開いてください。
->
-> ```bash
-> python -m http.server 8000
-> ```
->
-> その後、`http://localhost:8000` にアクセスします。
+`index.html` は `file://` 直開きだと JSON fetch が CORS 制限で失敗することがあります。ローカルサーバーで確認してください。
 
-### データ読み込み構成（2026-04 更新）
-
-- `index/latest.json`:
-  - 初期表示で読む軽量データ（1動画=1件のサマリー）
-  - 主な項目: `id/title/date/url/tags/section_count/thumb/detail_id`
-- `index/video-details/{id}.json`:
-  - 動画カード展開時だけ読む詳細データ
-  - `sections[]`（`name/sectionUrl/subsections[]`）を保持
-- `index/talks.json`:
-  - トークタブに切り替えた時だけ読むデータ
-  - 事前にグルーピング済みで、ブラウザ側で再集計しない
-  - 404時は旧形式 `latest.json`（rows/items配列）からのフォールバックを試行
-- `index/search_index.json`:
-  - 検索入力フォーカス時だけ lazy-load（従来どおり）
-
-理由:
-- アーカイブ増加で `latest.json` が大きくなり、初期転送/JSON解析/クライアント集計コストが増えるためです。
-
-### 背景演出の調整ポイント（軽量）
-
-- 背景は CSS 主体です（超低速グラデーション / 波）。
-- 反応はカード hover/focus 時のクラス切り替えだけで、JS再計算を最小化しています。
-- 演出を強くしたい場合も、次の値を少しだけ調整してください。
-  - `styles.css` の `--ambient-wave-opacity`
-  - `@keyframes wave-slide` の duration
-- 可読性優先のため、明滅強化・高速化は避けてください。
-
-## Cloudflare Workers Builds 用のビルド契約（PR/Preview共通）
-
-このリポジトリのフロントエンドは **静的ファイル（`index.html` / `app.js` / `styles.css`）** です。  
-Cloudflare Workers Builds では、次の固定契約でビルドします。
-
-- Install: `npm ci`
-- Build: `npm run ci:build`
-- Output directory: `dist`
-- Node.js: `20.x`（`.nvmrc` / `package.json#engines`）
-- 必須環境変数: なし
-- 任意環境変数: `TALK_INDEX_DATA_URL`（指定時はURL形式を事前検証）
-
-### ビルドで行うこと
-
-1. `npm run validate:build-env`
-   - ソースファイルの存在確認
-   - `TALK_INDEX_DATA_URL` が空文字・不正URLなら即失敗
-2. `npm run build`
-   - `dist/` を毎回作り直し
-   - 静的3ファイルをコピー
-   - 必要なら `window.TALK_INDEX_DATA_URL` を差し替え
-3. `npm run preview:check`
-   - `dist` の必須ファイル存在チェック
-   - `window.TALK_INDEX_DATA_URL` 定義確認
-
-### GitHub Actions との整合
-
-- workflow: `.github/workflows/cloudflare_build_contract.yml`
-- PR時点で Cloudflare と同じ前提（install/build/output）を検証します。
+```bash
+python -m http.server 8000
+```
 
-### Cloudflare Dashboard で合わせる値
+`http://localhost:8000` を開きます。
 
-Workers Builds / Preview の設定は、次に合わせてください。
+## GitHub Actions / 自動運用
 
-- Build command: `npm run ci:build`
-- Build output directory: `dist`
-- Root directory: repository root（このREADMEがあるディレクトリ）
-- Node version: `20`
+- `daily_crawl.yml`  
+  毎日 `22:00 UTC`（`07:00 JST`）に `python -m crawler.jobs.daily_crawl` を実行。
+- `upload_index_json_to_r2.yml`  
+  毎日 `22:10 UTC`（`07:10 JST`）に `python exporter/sheet_to_json_and_upload_r2.py` を実行。
+- `cloudflare_build_contract.yml`  
+  push / pull request 時に `npm ci` → build 契約チェックを実行。
 
-> ここがずれると「GitHub Actionsは成功だが Workers Builds だけ失敗」が発生しやすくなります。
+### 主な Secrets（用途別）
 
-## 索引シートJSONをR2へアップロード
+- クロール系:  
+  `YOUTUBE_API_KEY`, `YOUTUBE_CHANNEL_ID`, `SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `DAILY_MAX_RESULTS`  
+  （任意）`SPREADSHEET_WORKSHEET_NAME`, `TITLE_LIST_WORKSHEET_NAME`
+- R2 アップロード系:  
+  `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`  
+  + `SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON` などシート参照に必要な値
 
-索引シートをJSON化し、Cloudflare R2 に段階読み込み向けJSONを配置します。
+## R2 / JSON 出力
 
-- workflow: `.github/workflows/upload_index_json_to_r2.yml`
-- 実行スクリプト: `python exporter/sheet_to_json_and_upload_r2.py`
-- 実行タイミング: 手動 (`workflow_dispatch`) / 毎日定期 (`schedule`)
-- 出力ファイル:
-  - `index/latest.json`（初期カード描画用の軽量サマリー）
-  - `index/video-details/*.json`（カード展開時の詳細）
-  - `index/talks.json`（トークタブ用）
-  - `index/search_index.json`（事前計算済み検索index）
+エクスポーターは R2 に次を出力します。
 
-### 必要な GitHub Secrets（R2）
+- `index/latest.json` : 動画カード一覧の軽量サマリー
+- `index/video-details/*.json` : 各動画のセクション詳細
+- `index/talks.json` : トーク単位表示用データ
+- `index/search_index.json` : 検索用インデックス
 
-必須:
-- `SPREADSHEET_ID`
-- `GOOGLE_SERVICE_ACCOUNT_JSON`
-- `R2_ACCOUNT_ID`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET_NAME`
+## ビルド契約（静的フロント）
 
-補足:
-- `SPREADSHEET_ID` はスプレッドシートID（推奨）か、`https://docs.google.com/spreadsheets/d/...` 形式URLを指定できます。
+- 前提 Node: **20.x**（`package.json` / `.nvmrc`）
+- CI の基本コマンド:
 
-任意:
-- `SPREADSHEET_WORKSHEET_NAME`（未指定時: `索引`）
+```bash
+npm ci
+npm run ci:build
+```
 
-### 生成されるJSON
+- 生成物: `dist/`（`dist/index.html`, `dist/app.js`, `dist/styles.css`）
+- `TALK_INDEX_DATA_URL` を環境変数で渡すと、build 時に `dist/index.html` のデータ URL を差し替えます。
 
-- `index/latest.json`
-  - `version`
-  - `generated_at`
-  - `videos`（初期表示用の最小フィールド: `id/title/date/url/tags/section_count/thumb/detail_id`）
-- `index/video-details/{id}.json`
-  - `id`
-  - `sections`（`name/sectionUrl/subsections[]`）
-- `index/talks.json`
-  - `version`
-  - `generated_at`
-  - `talks`（トーク見出しごとにグルーピング済み）
-- `index/search_index.json`
-  - `version`
-  - `generated_at`
-  - `video.entries` + `video.inverted_index`
-  - `talk.entries` + `talk.inverted_index`
-- 空行や `タイトル/大見出し` 欠損行は除外
+## 運用手順（最小）
 
-## 運用手順（READMEだけで運用するための最短手順）
+### 初期設定
 
-### 1. 初期設定（最初に1回だけ）
+1. Google スプレッドシートを用意
+2. GitHub Secrets を登録
+3. 手動で Actions を 1 回実行して疎通確認
 
-1. GitHub Secrets を登録（daily crawl 用 + R2 用）。
-2. スプレッドシートを作成し、`GOOGLE_SERVICE_ACCOUNT_JSON` の `client_email` を編集者で共有。
-3. 必要ならワークシート名を Secrets に設定（未設定なら既定値を使用）。
+### 日次運用
 
-### 2. 日次運用の実行順
+- `daily_crawl.yml` がシート更新
+- `upload_index_json_to_r2.yml` が JSON を R2 へ反映
 
-1. `daily_crawl.yml` を実行（定期実行または手動）。
-2. 正常終了を確認後、`upload_index_json_to_r2.yml` を実行（または定期実行を待つ）。
-3. R2 の `index/latest.json` 更新を確認。
+### 失敗時確認
 
-### 3. 毎回の確認手順
+1. Actions ログで失敗ステップ確認
+2. Secrets の空値・タイポ確認
+3. スプレッドシート権限と R2 権限を確認
 
-1. GitHub Actions の実行結果が `Success` か確認。
-2. 索引シートに新規行が増えているか確認。
-3. R2 の `index/latest.json` の更新時刻が新しいか確認。
+## 補足ドキュメント
 
-### 4. 失敗時の確認（チェックリスト）
-
-- **環境変数エラー**: エラーログに出た不足Secret名を追加/修正。
-- **シートアクセス失敗**: `client_email` 共有漏れ、`SPREADSHEET_ID`、ワークシート名を確認。
-- **R2アップロード失敗**: `R2_ACCOUNT_ID` / キー / バケット名 / 書き込み権限を確認。
-- **差分が入らない**: タイトルリストの ID列またはURL列に値があるか確認。
-
-### 5. 補足
-
-- 必須環境変数が未設定の場合は、不足している変数名を明示して fail します。
-- 例外は握りつぶさず、原因がわかるメッセージで fail します。
-
-
-### R2運用ガイド
-
-R2 の初回構築・公開・キャッシュ・ロールバックは、以下のガイドを参照してください。
-
-- `docs/r2_operation_guide.md`
+- R2 の詳細運用: `docs/r2_operation_guide.md`
