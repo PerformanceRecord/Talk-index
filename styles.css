@@ -244,6 +244,11 @@ body[data-ambient-tone="calm"] .card:focus-within {
   cursor: pointer;
 }
 
+.card.is-expand-locked .card-summary {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 .card-main {
   min-width: 0;
 }
