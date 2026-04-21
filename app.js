@@ -832,6 +832,46 @@ function canSkipSearch(search) {
   return search.mode === "none" || !search.keyword;
 }
 
+function collectMatchedIdsFromStore(store, search) {
+  if (!store || canSkipSearch(search) || search.mode === "tag") return null;
+  const tokenMap = store.tokenMap instanceof Map ? store.tokenMap : new Map();
+  if (!tokenMap.size) return new Set();
+
+  const words = tokenizeText(search.keyword);
+  const tokens = words.length ? words : [normalizeToken(search.keyword)].filter(Boolean);
+  if (!tokens.length) return new Set();
+
+  const matched = new Set();
+  tokens.forEach((token) => {
+    const ids = tokenMap.get(token);
+    if (Array.isArray(ids)) ids.forEach((id) => matched.add(id));
+  });
+
+  if (matched.size) return matched;
+
+  for (const [token, ids] of tokenMap.entries()) {
+    if (!token.includes(search.keyword) || !Array.isArray(ids)) continue;
+    ids.forEach((id) => matched.add(id));
+  }
+  return matched;
+}
+
+function hitVideoBySearchIndex(video, matchedIds) {
+  if (!(matchedIds instanceof Set) || !matchedIds.size) return false;
+  return [
+    text(video?.id),
+    text(video?.key),
+    text(video?.detailId),
+    text(video?.url),
+  ].some((id) => id && matchedIds.has(id));
+}
+
+function hitTalkBySearchIndex(talk, matchedIds) {
+  if (!(matchedIds instanceof Set) || !matchedIds.size) return false;
+  const key = text(talk?.key);
+  return !!key && matchedIds.has(key);
+}
+
 function hitVideo(video, search) {
   if (canSkipSearch(search)) return true;
   if (search.mode === "tag") {
@@ -1240,6 +1280,13 @@ async function toggleFavoriteHeading(headingId, sourceTalk = null) {
 }
 
 function getFilteredVideos(search = parseSearch(state.search)) {
+  const matchedIds = collectMatchedIdsFromStore(state.recommendation?.video, search);
+  if (matchedIds instanceof Set) {
+    return state.videos
+      .filter((video) => hitVideoBySearchIndex(video, matchedIds))
+      .slice()
+      .sort((a, b) => compareDateDesc(a.date, b.date));
+  }
   return state.videos
     .filter((video) => hitVideo(video, search))
     .slice()
@@ -1247,6 +1294,17 @@ function getFilteredVideos(search = parseSearch(state.search)) {
 }
 
 function getFilteredTalks(search = parseSearch(state.search)) {
+  const matchedIds = collectMatchedIdsFromStore(state.recommendation?.talk, search);
+  if (matchedIds instanceof Set) {
+    let filteredByIndex = state.talks
+      .filter((talk) => hitTalkBySearchIndex(talk, matchedIds))
+      .slice()
+      .sort((a, b) => compareDateDesc(a.date, b.date));
+    if (state.randomTalkKeys) {
+      filteredByIndex = filteredByIndex.filter((talk) => state.randomTalkKeys.has(talk.key));
+    }
+    return filteredByIndex;
+  }
   let filtered = state.talks
     .filter((talk) => hitTalk(talk, search))
     .slice()
@@ -2131,6 +2189,9 @@ async function init() {
   const applySearchInput = (value) => {
     state.search = text(value);
     state.randomTalkKeys = null;
+    if (state.search && state.searchIndexStatus === "idle") {
+      void loadSearchIndexIfNeeded().then(() => render());
+    }
     render();
   };
 
@@ -2144,7 +2205,7 @@ async function init() {
 
   refs.search.addEventListener("focus", () => {
     if (state.searchIndexStatus === "idle") {
-      void loadSearchIndexIfNeeded();
+      void loadSearchIndexIfNeeded().then(() => render());
     }
   }, { once: false });
 
