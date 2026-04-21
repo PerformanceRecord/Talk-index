@@ -24,6 +24,8 @@ const state = {
   skippedRows: 0,
   openVideoKeys: new Set(),
   openTalkKeys: new Set(),
+  isVideoExpandLock: false,
+  videoAutoCollapseAnchor: null,
   viewMode: "video",
   randomSection: "",
   randomTalkKeys: null,
@@ -39,6 +41,7 @@ const state = {
 const RECOMMEND_LIMIT = 3;
 const NEW_VIDEO_HIGHLIGHT_COUNT = 1;
 const NEW_VIDEO_HIGHLIGHT_SCROLL_SCREENS = 2;
+const VIDEO_AUTO_COLLAPSE_PASSED_COUNT = 2;
 const SONG_DB_URL = "https://performancerecord.github.io/uni-uta-db/";
 const GENERIC_TAG_RATIO_THRESHOLD = 1;
 const HIDDEN_DISPLAY_TAGS = new Set(["Vtuber", "雲丹ゐくら", "個人Vtuber", "バーチャルYOUTUBER"]);
@@ -1003,9 +1006,45 @@ function createFormattedAnchor(href, label) {
   return a;
 }
 
+function getFilteredVideos(search = parseSearch(state.search)) {
+  return state.videos
+    .filter((video) => hitVideo(video, search))
+    .slice()
+    .sort((a, b) => compareDateDesc(a.date, b.date));
+}
+
+function getFilteredTalks(search = parseSearch(state.search)) {
+  let filtered = state.talks
+    .filter((talk) => hitTalk(talk, search))
+    .slice()
+    .sort((a, b) => compareDateDesc(a.date, b.date));
+
+  if (state.randomTalkKeys) {
+    filtered = filtered.filter((talk) => state.randomTalkKeys.has(talk.key));
+  }
+  return filtered;
+}
+
+function getDisplayedVideoOpenKeys(videos) {
+  if (state.isVideoExpandLock) {
+    return new Set(videos.map((video) => video.key));
+  }
+  return state.openVideoKeys;
+}
+
 function updateToggleAllButton() {
-  const total = state.viewMode === "video" ? state.videos.length : state.talks.length;
-  const openCount = state.viewMode === "video" ? state.openVideoKeys.size : state.openTalkKeys.size;
+  const search = parseSearch(state.search);
+  let total = 0;
+  let openCount = 0;
+  if (state.viewMode === "video") {
+    const videos = getFilteredVideos(search);
+    total = videos.length;
+    openCount = getDisplayedVideoOpenKeys(videos).size;
+  } else {
+    const talks = getFilteredTalks(search);
+    total = talks.length;
+    openCount = state.openTalkKeys.size;
+  }
   const allOpen = total > 0 && openCount === total;
   refs.toggleAll.textContent = allOpen ? "全て折り畳み" : "全て展開";
 }
@@ -1146,14 +1185,16 @@ function renderCards(videos) {
   if (!videos.length) return renderNoResult();
 
   refs.results.innerHTML = "";
+  const openKeys = getDisplayedVideoOpenKeys(videos);
+  const lockClass = state.isVideoExpandLock ? " is-expand-locked" : "";
 
-  videos.forEach((video) => {
+  videos.forEach((video, index) => {
     const card = document.createElement("article");
-    card.className = "card";
+    card.className = `card${lockClass}`;
     card.dataset.key = video.key;
     const sectionsForTone = Array.isArray(video.sections) ? video.sections : [];
     card.dataset.tone = pickAmbientTone([video.title, ...video.tags, ...sectionsForTone.map((sec) => sec.name)]);
-    if (state.openVideoKeys.has(video.key)) card.classList.add("is-open");
+    if (openKeys.has(video.key)) card.classList.add("is-open");
     if (state.isNewVideoHighlightVisible && state.newVideoHighlightKeys.has(video.key)) card.classList.add("is-new-highlight");
 
     const summary = document.createElement("div");
@@ -1284,10 +1325,15 @@ function renderCards(videos) {
 
     detail.append(sectionList, tags);
     summary.addEventListener("click", async () => {
+      if (state.isVideoExpandLock) return;
       if (state.openVideoKeys.has(video.key)) {
         state.openVideoKeys.delete(video.key);
+        if (state.videoAutoCollapseAnchor?.key === video.key) {
+          state.videoAutoCollapseAnchor = null;
+        }
       } else {
         state.openVideoKeys.add(video.key);
+        state.videoAutoCollapseAnchor = { key: video.key, index };
         if (!Array.isArray(video.sections)) {
           render();
           await ensureVideoDetailsLoaded(video);
@@ -1403,15 +1449,7 @@ function render() {
     updateToggleAllButton();
     return;
   }
-  let filtered = isVideo
-    ? state.videos.filter((video) => hitVideo(video, search))
-    : state.talks.filter((talk) => hitTalk(talk, search));
-
-  filtered = filtered.slice().sort((a, b) => compareDateDesc(a.date, b.date));
-
-  if (!isVideo && state.randomTalkKeys) {
-    filtered = filtered.filter((talk) => state.randomTalkKeys.has(talk.key));
-  }
+  const filtered = isVideo ? getFilteredVideos(search) : getFilteredTalks(search);
 
   refs.notice.textContent = "";
 
@@ -1633,8 +1671,17 @@ async function pickRandomSection() {
 
 function toggleAllByMode() {
   if (state.viewMode === "video") {
-    const allOpen = state.videos.length > 0 && state.openVideoKeys.size === state.videos.length;
-    state.openVideoKeys = allOpen ? new Set() : new Set(state.videos.map((v) => v.key));
+    const videos = getFilteredVideos();
+    const allOpen = videos.length > 0 && getDisplayedVideoOpenKeys(videos).size === videos.length;
+    if (allOpen) {
+      state.openVideoKeys = new Set();
+      state.isVideoExpandLock = false;
+      state.videoAutoCollapseAnchor = null;
+      return;
+    }
+    state.openVideoKeys = new Set(videos.map((video) => video.key));
+    state.isVideoExpandLock = true;
+    state.videoAutoCollapseAnchor = null;
     return;
   }
 
@@ -1645,10 +1692,52 @@ function toggleAllByMode() {
 async function switchViewMode(mode) {
   if (mode === "talk") {
     await loadTalksIfNeeded();
+    state.isVideoExpandLock = false;
+    state.videoAutoCollapseAnchor = null;
   }
   state.viewMode = mode;
   state.randomTalkKeys = null;
   state.randomSection = "";
+  render();
+}
+
+function getHeaderBottomOffset() {
+  const fixedHeader = document.querySelector(".view-tabs-row");
+  if (!fixedHeader) return 0;
+  const rect = fixedHeader.getBoundingClientRect();
+  return Math.max(rect.bottom, 0);
+}
+
+function handleVideoAutoCollapseByCardPass() {
+  if (state.viewMode !== "video") return;
+  if (state.isVideoExpandLock) return;
+  if (!state.videoAutoCollapseAnchor?.key) return;
+
+  const cards = Array.from(refs.results?.querySelectorAll?.(".card") || []);
+  if (!cards.length) return;
+
+  const anchor = state.videoAutoCollapseAnchor;
+  const anchorIndexByKey = cards.findIndex((card) => card.dataset.key === anchor.key);
+  const anchorIndex = anchorIndexByKey >= 0 ? anchorIndexByKey : anchor.index;
+  const anchorCard = cards[anchorIndex];
+  if (!anchorCard || anchorIndex < 0) {
+    state.videoAutoCollapseAnchor = null;
+    return;
+  }
+
+  const headerBottom = getHeaderBottomOffset();
+  const passedCount = cards.slice(anchorIndex + 1).reduce((count, card) => {
+    const summary = card.querySelector(".card-summary");
+    if (!summary) return count;
+    return summary.getBoundingClientRect().top <= headerBottom ? count + 1 : count;
+  }, 0);
+  const anchorBottom = anchorCard.getBoundingClientRect().bottom;
+  const hasPassedEnoughCards = passedCount >= VIDEO_AUTO_COLLAPSE_PASSED_COUNT;
+  const isAnchorOutOfView = anchorBottom <= headerBottom;
+  if (!hasPassedEnoughCards || !isAnchorOutOfView) return;
+
+  state.openVideoKeys.delete(anchor.key);
+  state.videoAutoCollapseAnchor = null;
   render();
 }
 
@@ -1763,6 +1852,7 @@ async function init() {
   window.addEventListener("scroll", () => {
     updateScrollGradient();
     updateAmbientTransitionByCards();
+    handleVideoAutoCollapseByCardPass();
     const before = state.isNewVideoHighlightVisible;
     updateNewVideoHighlightVisibility();
     if (before !== state.isNewVideoHighlightVisible && state.viewMode === "video") {
