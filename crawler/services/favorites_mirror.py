@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import boto3
-
-from crawler.services.spreadsheet import replace_sheet_records, upsert_sheet_records
+import gspread
 
 FAVORITES_EXPORT_PREFIX = "favorites/exports"
 FAVORITES_AGGREGATE_KEYS = {
@@ -297,6 +296,85 @@ def build_daily_snapshot_upsert_key(row: dict[str, Any]) -> tuple[str, str]:
         str(row.get("snapshotDate") or "").strip(),
         str(row.get("headingId") or "").strip(),
     )
+
+
+def _open_worksheet(gc: gspread.Client, spreadsheet_id: str, sheet_name: str) -> gspread.Worksheet:
+    sh = gc.open_by_key(spreadsheet_id)
+    try:
+        return sh.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(title=sheet_name, rows=2000, cols=40)
+
+
+def _row_from_record(columns: list[str], record: dict[str, Any]) -> list[str]:
+    return [str(record.get(column, "") or "") for column in columns]
+
+
+def replace_sheet_records(
+    gc: gspread.Client,
+    spreadsheet_id: str,
+    sheet_name: str,
+    columns: list[str],
+    records: Iterable[dict[str, Any]],
+) -> dict[str, int]:
+    worksheet = _open_worksheet(gc, spreadsheet_id, sheet_name)
+    rows = [_row_from_record(columns, record) for record in records]
+    worksheet.clear()
+    worksheet.update("A1", [columns, *rows], value_input_option="RAW")
+    return {"written": len(rows)}
+
+
+def upsert_sheet_records(
+    gc: gspread.Client,
+    spreadsheet_id: str,
+    sheet_name: str,
+    columns: list[str],
+    records: Iterable[dict[str, Any]],
+    *,
+    key_columns: list[str],
+) -> dict[str, int]:
+    worksheet = _open_worksheet(gc, spreadsheet_id, sheet_name)
+    existing = worksheet.get_all_values()
+
+    if not existing:
+        worksheet.update("A1", [columns], value_input_option="RAW")
+        existing = [columns]
+
+    header = existing[0]
+    if header != columns:
+        worksheet.clear()
+        worksheet.update("A1", [columns], value_input_option="RAW")
+        header = columns
+        existing = [columns]
+
+    index_by_key: dict[tuple[str, ...], int] = {}
+    for row_number, row in enumerate(existing[1:], start=2):
+        normalized_row = row + [""] * (len(header) - len(row))
+        record = {header[index]: normalized_row[index] for index in range(len(header))}
+        key = tuple(record.get(column, "") for column in key_columns)
+        if all(key):
+            index_by_key[key] = row_number
+
+    appended = 0
+    updated = 0
+    next_row = len(existing) + 1
+
+    for record in records:
+        row_values = _row_from_record(columns, record)
+        key = tuple(str(record.get(column, "") or "") for column in key_columns)
+        if not all(key):
+            raise RuntimeError(f"upsert key columns missing for sheet={sheet_name}: {key}")
+        target_row = index_by_key.get(key)
+        if target_row is None:
+            worksheet.update(f"A{next_row}", [row_values], value_input_option="RAW")
+            index_by_key[key] = next_row
+            next_row += 1
+            appended += 1
+        else:
+            worksheet.update(f"A{target_row}", [row_values], value_input_option="RAW")
+            updated += 1
+
+    return {"appended": appended, "updated": updated}
 
 
 def compute_previous_week_key_jst(reference_utc: datetime) -> str:
