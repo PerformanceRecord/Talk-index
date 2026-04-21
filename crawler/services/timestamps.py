@@ -62,8 +62,6 @@ def _build_effective_sources(
     fallback_text: str,
 ) -> list[TimestampSource]:
     items: list[TimestampSource] = []
-    if description.strip():
-        items.append(TimestampSource(source_type="description", text=description.strip()))
 
     for src in timestamp_sources or []:
         text = (src.text or "").strip()
@@ -81,6 +79,9 @@ def _build_effective_sources(
             )
         )
 
+    if description.strip():
+        items.append(TimestampSource(source_type="description", text=description.strip()))
+
     if not items and fallback_text.strip():
         items.append(TimestampSource(source_type="top", text=fallback_text.strip()))
 
@@ -88,8 +89,8 @@ def _build_effective_sources(
 
 
 def _merge_and_dedup_entries(sources: list[TimestampSource]) -> list[ParsedTimestampEntry]:
-    merged: dict[tuple[int, str], ParsedTimestampEntry] = {}
-
+    indexed_entries: list[tuple[int, ParsedTimestampEntry]] = []
+    order = 0
     for source in sources:
         priority = _source_priority(source.source_type)
         for raw_line in source.text.splitlines():
@@ -97,23 +98,63 @@ def _merge_and_dedup_entries(sources: list[TimestampSource]) -> list[ParsedTimes
             if not parsed:
                 continue
             for entry in parsed:
-                key = (entry.seconds, _normalize_dedup_label(entry.label))
-                existing = merged.get(key)
-                if not existing:
-                    merged[key] = entry
-                    continue
+                indexed_entries.append((order, entry))
+                order += 1
 
-                if entry.source_priority > existing.source_priority:
-                    merged[key] = entry
-                    continue
+    comment_entries = [(idx, ent) for idx, ent in indexed_entries if ent.source_type != "description"]
+    occupied_seconds = {ent.seconds for _, ent in comment_entries}
+    description_entries = [
+        (idx, ent)
+        for idx, ent in indexed_entries
+        if ent.source_type == "description" and ent.seconds not in occupied_seconds
+    ]
 
-                if (
-                    entry.source_priority == existing.source_priority
-                    and len(entry.label) > len(existing.label)
-                ):
-                    merged[key] = entry
+    merged = comment_entries + description_entries
+    exact_merged: dict[tuple[int, str], tuple[int, ParsedTimestampEntry]] = {}
+    for idx, entry in merged:
+        key = (entry.seconds, _normalize_dedup_label(entry.label))
+        existing = exact_merged.get(key)
+        if not existing:
+            exact_merged[key] = (idx, entry)
+            continue
 
-    return sorted(merged.values(), key=lambda x: x.seconds)
+        existing_idx, existing_entry = existing
+        if entry.source_priority > existing_entry.source_priority:
+            exact_merged[key] = (idx, entry)
+            continue
+        if entry.source_priority == existing_entry.source_priority:
+            if len(entry.label) > len(existing_entry.label):
+                exact_merged[key] = (idx, entry)
+                continue
+            if len(entry.label) == len(existing_entry.label) and idx < existing_idx:
+                exact_merged[key] = (idx, entry)
+
+    merged = sorted(exact_merged.values(), key=lambda item: item[0])
+    accepted: list[tuple[int, ParsedTimestampEntry]] = []
+
+    for idx, entry in merged:
+        duplicate_indexes = [
+            i
+            for i, (accepted_idx, accepted_entry) in enumerate(accepted)
+            if _is_duplicate_candidate(entry, accepted_entry)
+        ]
+        if not duplicate_indexes:
+            accepted.append((idx, entry))
+            continue
+
+        contenders = [(idx, entry)] + [accepted[i] for i in duplicate_indexes]
+        winner_idx, winner_entry = min(
+            contenders,
+            key=lambda item: (-item[1].source_priority, item[0]),
+        )
+        if winner_idx != idx:
+            continue
+
+        for i in reversed(duplicate_indexes):
+            accepted.pop(i)
+        accepted.append((idx, winner_entry))
+
+    return [entry for _, entry in sorted(accepted, key=lambda item: item[1].seconds)]
 
 
 def _group_entries(entries: list[ParsedTimestampEntry]) -> list[GroupedTimeline]:
@@ -219,11 +260,26 @@ def _looks_like_major(ts: str, label: str, major_hint: str, has_minor_marker: bo
     if has_minor_marker:
         return False
 
-    if major_hint:
+    if label.strip():
         return True
 
-    parts = ts.split(":")
-    if len(parts) == 3:
+    if major_hint.strip():
+        return True
+
+    return False
+
+
+def _is_duplicate_candidate(entry: ParsedTimestampEntry, existing: ParsedTimestampEntry) -> bool:
+    if entry.source_type == existing.source_type:
+        return False
+
+    normalized_entry = _normalize_dedup_label(entry.label)
+    normalized_existing = _normalize_dedup_label(existing.label)
+
+    if normalized_entry and normalized_existing and normalized_entry == normalized_existing:
+        return True
+
+    if abs(entry.seconds - existing.seconds) <= 10:
         return True
 
     return False
@@ -259,9 +315,9 @@ def _normalize_dedup_label(label: str) -> str:
 
 
 def _source_priority(source_type: str) -> int:
-    if source_type == "description":
-        return 3
     if source_type == "top":
+        return 3
+    if source_type == "reply":
         return 2
     return 1
 
