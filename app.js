@@ -1250,7 +1250,7 @@ async function syncFavoriteVote(headingId, sourceTalk = null) {
   } catch (error) {
     state.unsyncedFavoriteHeadingIds.add(normalized);
     saveFavoritesToStorage();
-    refs.notice.textContent = `お気に入りは保存済みです（投票は未同期: ${error instanceof Error ? error.message : String(error)}）`;
+    console.warn("[favorites] vote sync failed", error);
     return false;
   }
 }
@@ -1278,7 +1278,6 @@ async function loadFavoritesDataIfNeeded() {
     state.favoritesHall = hall;
     state.favoritesDataStatus = "ready";
   } catch (error) {
-    state.favoritesDataError = "集計データを取得できませんでした";
     console.warn("[favorites] aggregate load failed", error);
     state.favoritesDataStatus = "error";
   }
@@ -1841,12 +1840,6 @@ function renderFavoritesTab() {
   const hallMeta = state.favoritesDataStatus === "ready" ? "累計上位" : state.favoritesDataStatus === "loading" ? "読込中…" : state.favoritesDataStatus === "error" ? "取得失敗" : "未取得";
   refs.results.appendChild(createFavoritePanel("殿堂入り", "hall", hallTalks, hallMeta));
 
-  if (state.favoritesDataStatus === "error") {
-    const note = document.createElement("p");
-    note.className = "favorite-panel-empty";
-    note.textContent = state.favoritesDataError || "集計データを取得できませんでした";
-    refs.results.appendChild(note);
-  }
 }
 
 function render() {
