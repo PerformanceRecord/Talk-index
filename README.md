@@ -170,7 +170,7 @@ python -m http.server 8000
 
 JSON取得の共通基盤は `src/data/fetch-json.js`（`fetchJsonFromCandidates` など）を使い、favorites 側で独自の汎用JSON fetch helperは持たない方針です。
 
-### フロントUI（MVP）
+### フロントUI（最小構成）
 
 - タブ: `動画単位 / トーク単位 / お気に入り`
 - ☆/★トグル: 大見出し行の右端に配置（即時反映）
@@ -219,7 +219,7 @@ JSON取得の共通基盤は `src/data/fetch-json.js`（`fetchJsonFromCandidates
 - 手動: GitHub Actions `Mirror favorites aggregates to Spreadsheet` を `workflow_dispatch` で実行
 - 日次: 同ワークフローの `schedule`（毎日 09:00 UTC / 18:00 JST）
 
-### favorites READ/WRITE URL 設定
+### favorites 読み取り/書き込み URL 設定
 
 - favorites は READ（aggregate JSON 取得）と WRITE（vote API送信）を分離可能です。
 - aggregate JSON と vote API は別ホスト構成でも動作します。
@@ -238,7 +238,7 @@ JSON取得の共通基盤は `src/data/fetch-json.js`（`fetchJsonFromCandidates
   - お気に入りタブ遷移時
   - 再お気に入り時（toggle直後）
 
-### favorites 有効化に必要な設定
+### favorites 有効化に必要な設定（管理者向け）
 
 - `index.html` に `window.__TALK_INDEX_FAVORITES_BASE_URL__` を設定（vote 送信先 Worker のベースURL）
 - Worker 環境変数 `FAVORITES_ALLOWED_ORIGINS` を設定（許可する Origin をカンマ区切りで列挙）
@@ -252,7 +252,7 @@ GitHub Actions `rebuild_favorites_aggregates.yml` を追加しています。
 R2内の原票から read model を再生成し、R2に上書き保存します。
 
 
-### favorites 手動確認手順
+### favorites 手動確認手順（管理者向け）
 
 1. ブラウザで ★ を押したときの送信先が Worker URL（`__TALK_INDEX_FAVORITES_BASE_URL__`）になっていることを確認
 2. Worker に対する `OPTIONS /favorites/vote` が `204` を返すことを確認
