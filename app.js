@@ -1,5 +1,5 @@
 import { createInvalidJsonShapeError, createTargetFetchError, fetchJsonFromCandidates } from "./src/data/fetch-json.js";
-import { fetchHallOfFame, fetchRecentRecommendations, sendFavoriteVote as sendFavoriteVoteRequest } from "./src/features/favorites.js";
+import { fetchFavoriteRanking, fetchHallOfFame, fetchRecentRecommendations, sendFavoriteVote as sendFavoriteVoteRequest } from "./src/features/favorites.js";
 import { getModeMessage } from "./src/ui/render-messages.js";
 
 const configuredDataUrl = text(window.TALK_INDEX_DATA_URL);
@@ -63,6 +63,7 @@ const state = {
   favoritePanelOpenKeys: new Set(),
   favoritesRecent: null,
   favoritesHall: null,
+  favoritesCurrentRanking: null,
   favoritesDataStatus: "idle",
   favoritesDataError: "",
 };
@@ -598,21 +599,15 @@ function stableHash(value) {
 function buildFavoriteCountLookupByTalkKey() {
   const lookup = new Map();
   const talkKeys = new Set(state.talks.map((talk) => text(talk?.key)).filter(Boolean));
-  const addCount = (headingId, count) => {
-    const key = text(headingId);
+  const rankingItems = Array.isArray(state.favoritesCurrentRanking)
+    ? state.favoritesCurrentRanking
+    : (Array.isArray(state.favoritesCurrentRanking?.items) ? state.favoritesCurrentRanking.items : []);
+  rankingItems.forEach((item) => {
+    const key = text(item?.talkKey || item?.headingId || item?.id);
     if (!key || !talkKeys.has(key)) return;
-    const safeCount = Number(count);
+    const safeCount = Number(item?.favoriteCount ?? item?.voteCount ?? item?.count);
     if (!Number.isFinite(safeCount) || safeCount <= 0) return;
-    lookup.set(key, (lookup.get(key) || 0) + safeCount);
-  };
-  const sources = [state.favoritesHall, state.favoritesRecent];
-  sources.forEach((source) => {
-    const items = Array.isArray(source?.items) ? source.items : [];
-    items.forEach((item) => {
-      const headingId = getHeadingIdFromObject(item);
-      const voteCount = item?.favoriteCount ?? item?.voteCount ?? item?.count;
-      addCount(headingId, voteCount);
-    });
+    lookup.set(key, safeCount);
   });
   state.favoriteCountByTalkKey = lookup;
 }
@@ -1276,6 +1271,7 @@ async function fetchFavoritesAggregate(kind) {
   const loaders = {
     recent: fetchRecentRecommendations,
     hall: fetchHallOfFame,
+    ranking: fetchFavoriteRanking,
   };
   const load = loaders[kind];
   if (!load) throw new Error(`unsupported favorites aggregate kind: ${kind}`);
@@ -1342,12 +1338,14 @@ async function loadFavoritesDataIfNeeded() {
   state.favoritesDataError = "";
   render();
   try {
-    const [recent, hall] = await Promise.all([
+    const [recent, hall, ranking] = await Promise.all([
       fetchFavoritesAggregate("recent"),
       fetchFavoritesAggregate("hall"),
+      fetchFavoritesAggregate("ranking"),
     ]);
     state.favoritesRecent = recent;
     state.favoritesHall = hall;
+    state.favoritesCurrentRanking = ranking;
     state.favoriteCountByTalkKey = new Map();
     state.favoritesDataStatus = "ready";
   } catch (error) {
