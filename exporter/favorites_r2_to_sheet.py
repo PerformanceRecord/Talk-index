@@ -13,6 +13,7 @@ from crawler.services.favorites_mirror import (
     FAVORITES_RECENT_RECOMMENDATIONS_SHEET,
     PUBLIC_FAVORITES_HALL_OF_FAME_SHEET,
     PUBLIC_FAVORITES_RECENT_RECOMMENDATIONS_SHEET,
+    build_heading_video_candidates_map,
     build_heading_video_title_map,
     build_public_sheet_rows_from_items,
     build_sheet_rows_from_items,
@@ -149,6 +150,7 @@ def main() -> None:
 
     heading_title_map = build_heading_video_title_map(talks_payload)
     video_metadata_map = build_video_metadata_map(talks_payload, latest_payload)
+    heading_video_candidates_map = build_heading_video_candidates_map(talks_payload)
 
     current_rows = build_sheet_rows_from_items(
         payload=current_payload,
@@ -191,10 +193,15 @@ def main() -> None:
         rows=recent_rows,
     )
 
-    public_hall_rows = build_public_sheet_rows_from_items(payload=hall_payload, video_metadata_map=video_metadata_map)
+    public_hall_rows = build_public_sheet_rows_from_items(
+        payload=hall_payload,
+        video_metadata_map=video_metadata_map,
+        heading_video_candidates_map=heading_video_candidates_map,
+    )
     public_recent_rows = build_public_sheet_rows_from_items(
         payload=recent_payload,
         video_metadata_map=video_metadata_map,
+        heading_video_candidates_map=heading_video_candidates_map,
     )
     replace_public_sheet_rows(
         client=gspread_client,
