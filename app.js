@@ -54,6 +54,7 @@ const state = {
   videoDetailsPromises: new Map(),
   talkRecommendationCache: new Map(),
   talkSearchDocuments: null,
+  favoriteCountByTalkKey: new Map(),
   lastFallbackTalkKey: "",
   favoritesClientId: "",
   favoritedHeadingIds: new Set(),
@@ -432,6 +433,10 @@ function normalizeRecommendationText(raw) {
     .trim();
 }
 
+function normalizeRecommendationTitle(value) {
+  return normalizeRecommendationText(value).replace(/\s+/g, "");
+}
+
 function normalizeRecommendationToken(rawToken) {
   let token = normalizeRecommendationText(rawToken);
   if (!token) return "";
@@ -532,12 +537,15 @@ function buildTalkSearchDocumentsIfNeeded() {
   if (state.talkSearchDocuments) return state.talkSearchDocuments;
   state.talkSearchDocuments = state.talks.map((talk) => {
     const sourceTitle = text(talk.subsections?.[0]?.videoTitle);
+    const childTexts = getChildHeadingTexts(talk);
     return {
       key: talk.key,
       talk,
       date: parseDateValue(talk.date),
       headingText: normalizeRecommendationText(talk.name),
-      subsectionText: normalizeRecommendationText((talk.subsections || []).map((sub) => sub.name).join(" ")),
+      titleNormalized: normalizeRecommendationTitle(talk.name),
+      subsectionText: normalizeRecommendationText(childTexts.join(" ")),
+      childHeadingTexts: childTexts,
       sourceTitleText: normalizeRecommendationText(sourceTitle),
       sourceTitle,
       subsectionCount: Array.isArray(talk.subsections) ? talk.subsections.length : 0,
@@ -546,61 +554,135 @@ function buildTalkSearchDocumentsIfNeeded() {
   return state.talkSearchDocuments;
 }
 
-function searchBestTalkByWord(word, currentTalkKey, usedTalkKeys) {
-  const documents = buildTalkSearchDocumentsIfNeeded();
-  const normalizedWord = normalizeRecommendationToken(word);
-  if (!normalizedWord) return null;
-
-  const scored = [];
-  documents.forEach((doc) => {
-    if (doc.key === currentTalkKey || usedTalkKeys.has(doc.key)) return;
-    let score = 0;
-    if (doc.headingText.includes(normalizedWord)) score += 5;
-    if (doc.subsectionText.includes(normalizedWord)) score += 3;
-    if (doc.sourceTitleText.includes(normalizedWord)) score += 1;
-    if (score < TALK_RECOMMENDATION_MIN_SCORE) return;
-    scored.push({ doc, score });
-  });
-
-  if (!scored.length) return null;
-  scored.sort((a, b) => b.score - a.score);
-  const topScore = scored[0].score;
-  const top = scored.filter((item) => item.score === topScore);
-  top.sort((a, b) => {
-    if (a.doc.date && b.doc.date && a.doc.date !== b.doc.date) return a.doc.date.localeCompare(b.doc.date);
-    if (a.doc.date && !b.doc.date) return -1;
-    if (!a.doc.date && b.doc.date) return 1;
-    return a.doc.key.localeCompare(b.doc.key);
-  });
-
-  return top[0]?.doc || null;
+function getChildHeadingTexts(talk) {
+  return (Array.isArray(talk?.subsections) ? talk.subsections : [])
+    .map((sub) => text(sub?.name))
+    .filter(Boolean);
 }
 
-function pickFallbackTalk(currentTalk, usedTalkKeys) {
-  const currentDate = parseDateValue(currentTalk.date);
-  const documents = buildTalkSearchDocumentsIfNeeded().filter((doc) => {
-    if (doc.key === currentTalk.key || usedTalkKeys.has(doc.key)) return false;
-    if (currentDate && doc.date && doc.date > currentDate) return false;
-    return true;
+function extractRecommendationWords(texts) {
+  const words = new Set();
+  (Array.isArray(texts) ? texts : []).forEach((value) => {
+    const normalized = normalizeRecommendationText(value);
+    const tokens = normalized.match(/[一-龠ぁ-んァ-ヶーa-zA-Z0-9]+/g) || [];
+    tokens.forEach((token) => {
+      const word = normalizeRecommendationToken(token);
+      if (word) words.add(word);
+    });
   });
+  return Array.from(words);
+}
 
-  if (!documents.length) return null;
-
-  documents.sort((a, b) => {
-    if (state.lastFallbackTalkKey) {
-      if (a.key === state.lastFallbackTalkKey) return 1;
-      if (b.key === state.lastFallbackTalkKey) return -1;
-    }
-    if (a.subsectionCount !== b.subsectionCount) return b.subsectionCount - a.subsectionCount;
-    if (a.date && b.date && a.date !== b.date) return a.date.localeCompare(b.date);
-    if (a.date && !b.date) return -1;
-    if (!a.date && b.date) return 1;
-    return a.key.localeCompare(b.key);
+function computeRecommendationScore(sourceWords, candidateHeading, candidateChildren) {
+  if (!Array.isArray(sourceWords) || sourceWords.length === 0) return 0;
+  const headingText = normalizeRecommendationText(candidateHeading);
+  const childText = normalizeRecommendationText((Array.isArray(candidateChildren) ? candidateChildren : []).join(" "));
+  let score = 0;
+  sourceWords.forEach((word) => {
+    if (headingText.includes(word)) score += 3;
+    if (childText.includes(word)) score += 1;
   });
+  return score;
+}
 
-  const picked = documents[0] || null;
-  if (picked) state.lastFallbackTalkKey = picked.key;
-  return picked;
+function stableHash(value) {
+  const src = text(value);
+  let hash = 2166136261;
+  for (let i = 0; i < src.length; i += 1) {
+    hash ^= src.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildFavoriteCountLookupByTalkKey() {
+  const lookup = new Map();
+  const talkKeys = new Set(state.talks.map((talk) => text(talk?.key)).filter(Boolean));
+  const addCount = (headingId, count) => {
+    const key = text(headingId);
+    if (!key || !talkKeys.has(key)) return;
+    const safeCount = Number(count);
+    if (!Number.isFinite(safeCount) || safeCount <= 0) return;
+    lookup.set(key, (lookup.get(key) || 0) + safeCount);
+  };
+  const sources = [state.favoritesHall, state.favoritesRecent];
+  sources.forEach((source) => {
+    const items = Array.isArray(source?.items) ? source.items : [];
+    items.forEach((item) => {
+      const headingId = getHeadingIdFromObject(item);
+      const voteCount = item?.favoriteCount ?? item?.voteCount ?? item?.count;
+      addCount(headingId, voteCount);
+    });
+  });
+  state.favoriteCountByTalkKey = lookup;
+}
+
+function getFavoriteCountByTalkKey(talkKey) {
+  if (!state.favoriteCountByTalkKey || state.favoriteCountByTalkKey.size === 0) {
+    buildFavoriteCountLookupByTalkKey();
+  }
+  return state.favoriteCountByTalkKey.get(text(talkKey)) || 0;
+}
+
+function collectTalkRecommendationCandidates(currentTalk) {
+  const sourceWords = extractRecommendationWords([currentTalk?.name, ...getChildHeadingTexts(currentTalk)]);
+  return buildTalkSearchDocumentsIfNeeded()
+    .filter((doc) => doc.key !== currentTalk.key)
+    .map((doc) => ({
+      doc,
+      id: doc.key,
+      title: doc.talk.name || "タイトルなし",
+      normalizedTitle: doc.titleNormalized || normalizeRecommendationTitle(doc.talk.name),
+      relevanceScore: computeRecommendationScore(sourceWords, doc.talk.name, doc.childHeadingTexts),
+      favoriteCount: getFavoriteCountByTalkKey(doc.key),
+    }));
+}
+
+function pickPrimaryRecommendation(candidates, currentTalkKey) {
+  const ranked = candidates
+    .filter((candidate) => candidate.relevanceScore > 0)
+    .slice()
+    .sort((a, b) => b.relevanceScore - a.relevanceScore || stableHash(`${currentTalkKey}:${a.id}`) - stableHash(`${currentTalkKey}:${b.id}`));
+  const selected = ranked[0];
+  if (!selected) return null;
+  return {
+    id: selected.id,
+    title: selected.title,
+    subtitle: formatTalkRecommendationSubtitle(selected.doc),
+    reason: "関連する話題",
+    searchQuery: text(selected.title),
+    normalizedTitle: selected.normalizedTitle,
+  };
+}
+
+function pickDiscoveryRecommendation(candidates, currentTalkKey, excludeKeys, excludeTitles) {
+  const base = candidates.filter((candidate) => {
+    if (excludeKeys.has(candidate.id)) return false;
+    if (excludeTitles.has(candidate.normalizedTitle)) return false;
+    return candidate.favoriteCount > 0;
+  });
+  const bands = [
+    (score) => score >= 20 && score <= 60,
+    (score) => score >= 10 && score <= 79,
+    (score) => score > 0,
+  ];
+  for (const inBand of bands) {
+    const pool = base
+      .filter((candidate) => inBand(candidate.relevanceScore))
+      .slice()
+      .sort((a, b) => stableHash(`${currentTalkKey}:${a.id}`) - stableHash(`${currentTalkKey}:${b.id}`) || a.id.localeCompare(b.id));
+    if (!pool.length) continue;
+    const selected = pool[0];
+    return {
+      id: selected.id,
+      title: selected.title,
+      subtitle: formatTalkRecommendationSubtitle(selected.doc),
+      reason: "こんな話題もおすすめ",
+      searchQuery: text(selected.title),
+      normalizedTitle: selected.normalizedTitle,
+    };
+  }
+  return null;
 }
 
 function formatTalkRecommendationSubtitle(doc) {
@@ -613,38 +695,22 @@ function buildTalkRecommendationsForTalk(talk) {
   const cached = state.talkRecommendationCache.get(talk.key);
   if (cached) return cached;
 
-  const usedTalkKeys = new Set();
+  const candidates = collectTalkRecommendationCandidates(talk);
+  const excludeKeys = new Set([talk.key]);
+  const excludeTitles = new Set([normalizeRecommendationTitle(talk.name)]);
   const recommendations = [];
-  const words = chooseTalkRecommendationQueryWords(talk);
 
-  words.forEach((word) => {
-    const hit = searchBestTalkByWord(word, talk.key, usedTalkKeys);
-    if (!hit) return;
-    usedTalkKeys.add(hit.key);
-    recommendations.push({
-      id: hit.key,
-      title: hit.talk.name || "タイトルなし",
-      subtitle: formatTalkRecommendationSubtitle(hit),
-      reason: `${word}といえば……`,
-      searchQuery: text(hit.talk.name),
-    });
-  });
-
-  const targetCount = Math.min(2, Math.max(0, state.talks.length - 1));
-  while (recommendations.length < targetCount) {
-    const fallback = pickFallbackTalk(talk, usedTalkKeys);
-    if (!fallback) break;
-    usedTalkKeys.add(fallback.key);
-    recommendations.push({
-      id: fallback.key,
-      title: fallback.talk.name || "タイトルなし",
-      subtitle: formatTalkRecommendationSubtitle(fallback),
-      reason: "こんな話題もおすすめ",
-      searchQuery: text(fallback.talk.name),
-    });
+  const primary = pickPrimaryRecommendation(candidates, talk.key);
+  if (primary) {
+    recommendations.push(primary);
+    excludeKeys.add(primary.id);
+    excludeTitles.add(primary.normalizedTitle);
   }
 
-  const finalItems = recommendations.slice(0, RECOMMEND_LIMIT);
+  const discovery = pickDiscoveryRecommendation(candidates, talk.key, excludeKeys, excludeTitles);
+  if (discovery) recommendations.push(discovery);
+
+  const finalItems = recommendations.slice(0, 2).map(({ normalizedTitle, ...item }) => item);
   state.talkRecommendationCache.set(talk.key, finalItems);
   return finalItems;
 }
@@ -1282,6 +1348,7 @@ async function loadFavoritesDataIfNeeded() {
     ]);
     state.favoritesRecent = recent;
     state.favoritesHall = hall;
+    state.favoriteCountByTalkKey = new Map();
     state.favoritesDataStatus = "ready";
   } catch (error) {
     console.warn("[favorites] aggregate load failed", error);
@@ -1514,7 +1581,7 @@ function createRecommendationBlock(items, mode) {
 }
 
 async function applyRecommendationSearch(item) {
-  const searchQuery = text(item?.searchQuery) || text(item?.title);
+  const searchQuery = text(item?.searchQuery || item?.title);
   if (!searchQuery) return;
 
   state.viewMode = "video";
@@ -2074,6 +2141,7 @@ async function loadTalksIfNeeded() {
       state.talks = talks;
       state.talkRecommendationCache = new Map();
       state.talkSearchDocuments = null;
+      state.favoriteCountByTalkKey = new Map();
       state.talksStatus = "ready";
       state.talksError = "";
       state.talksFallbackActive = false;
@@ -2088,6 +2156,7 @@ async function loadTalksIfNeeded() {
         state.talks = fallbackTalks;
         state.talkRecommendationCache = new Map();
         state.talkSearchDocuments = null;
+        state.favoriteCountByTalkKey = new Map();
         state.talksStatus = "ready";
         state.talksError = "";
         state.talksFallbackActive = true;
