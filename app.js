@@ -136,7 +136,8 @@ const ambientScene = {
   height: window.innerHeight,
   lastTick: 0,
   rafId: 0,
-  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    || window.matchMedia("(pointer: fine)").matches,
 };
 
 function text(value) {

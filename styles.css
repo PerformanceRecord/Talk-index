@@ -615,6 +615,13 @@ body[data-ambient-tone="calm"] .card:focus-within {
   }
 }
 
+@media (pointer: fine) {
+  .ambient-wave,
+  .ambient-star {
+    animation: none;
+  }
+}
+
 .tag {
   background: #ecfeff;
   border: 1px solid #c7f0f5;
