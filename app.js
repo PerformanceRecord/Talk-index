@@ -1,5 +1,6 @@
 import { createInvalidJsonShapeError, createTargetFetchError, fetchJsonFromCandidates } from "./src/data/fetch-json.js";
 import { fetchHallOfFame, fetchRecentRecommendations, sendFavoriteVote as sendFavoriteVoteRequest } from "./src/features/favorites.js";
+import { getFavoritesMeta, getModeMessage } from "./src/ui/render-messages.js";
 
 const configuredDataUrl = text(window.TALK_INDEX_DATA_URL);
 const DATA_URL_CANDIDATES = configuredDataUrl
@@ -38,6 +39,7 @@ const state = {
   talksStatus: "idle",
   talksError: "",
   talksPromise: null,
+  talksFallbackActive: false,
   skippedRows: 0,
   openVideoKeys: new Set(),
   openTalkKeys: new Set(),
@@ -1368,7 +1370,7 @@ function renderNoResult() {
   refs.results.innerHTML = "";
 
   const message = document.createElement("p");
-  message.textContent = "条件に一致する動画がありません";
+  message.textContent = getModeMessage(state.viewMode, "noResult");
 
   const fallback = document.createElement("a");
   fallback.className = "no-results-fallback";
@@ -1821,12 +1823,13 @@ function renderFavoritesTab() {
   const favoriteMeta = favoriteTalks.length ? `${favoriteTalks.length}件` : "0件";
   refs.results.appendChild(createFavoritePanel("お気に入りリスト", "mine", favoriteTalks, favoriteMeta));
 
-  const recentMeta = state.favoritesDataStatus === "ready"
-    ? `先週 ${state.favoritesRecent?.weekKey || ""}`.trim()
-    : state.favoritesDataStatus === "loading" ? "読込中…" : state.favoritesDataStatus === "error" ? "取得失敗" : "未取得";
+  const recentMeta = getFavoritesMeta(
+    state.favoritesDataStatus,
+    `先週 ${state.favoritesRecent?.weekKey || ""}`.trim(),
+  );
   refs.results.appendChild(createFavoritePanel("最近のおすすめ", "recent", recentTalks, recentMeta));
 
-  const hallMeta = state.favoritesDataStatus === "ready" ? "累計上位" : state.favoritesDataStatus === "loading" ? "読込中…" : state.favoritesDataStatus === "error" ? "取得失敗" : "未取得";
+  const hallMeta = getFavoritesMeta(state.favoritesDataStatus, "累計上位");
   refs.results.appendChild(createFavoritePanel("殿堂入り", "hall", hallTalks, hallMeta));
 
 }
@@ -1836,8 +1839,9 @@ function render() {
   const isVideo = state.viewMode === "video";
   const isTalkLike = state.viewMode === "talk" || state.viewMode === "favorites";
   if (isTalkLike && state.talksStatus === "loading") {
-    refs.notice.textContent = "トークを読込中…";
-    refs.results.innerHTML = "<p>トークを読込中…</p>";
+    const loadingMessage = getModeMessage("talk", "loading");
+    refs.notice.textContent = loadingMessage;
+    refs.results.innerHTML = `<p>${loadingMessage}</p>`;
     updateTabs();
     updateServerStatus("ok", 0);
     updateToggleAllButton();
@@ -1845,7 +1849,7 @@ function render() {
   }
   if (isTalkLike && state.talksStatus === "error") {
     refs.notice.textContent = "";
-    refs.results.innerHTML = "<p>トークデータの読込に失敗しました</p>";
+    refs.results.innerHTML = `<p>${getModeMessage("talk", "loadFailed")}</p>`;
     updateTabs();
     updateServerStatus("ok", 0);
     updateToggleAllButton();
@@ -1853,7 +1857,9 @@ function render() {
   }
   const filtered = isVideo ? getFilteredVideos(search) : getFilteredTalks(search);
 
-  refs.notice.textContent = "";
+  refs.notice.textContent = state.talksFallbackActive && isTalkLike
+    ? getModeMessage("talk", "fallback")
+    : "";
 
   updateTabs();
   updateServerStatus("ok", state.viewMode === "favorites" ? state.favoritedHeadingIds.size : filtered.length);
@@ -1972,6 +1978,7 @@ async function loadTalksIfNeeded() {
 
   state.talksStatus = "loading";
   state.talksError = "";
+  state.talksFallbackActive = false;
   render();
   state.talksPromise = (async () => {
     let talksFetchError = null;
@@ -1985,6 +1992,7 @@ async function loadTalksIfNeeded() {
       state.talkSearchDocuments = null;
       state.talksStatus = "ready";
       state.talksError = "";
+      state.talksFallbackActive = false;
       return state.talks;
     } catch (error) {
       talksFetchError = error;
@@ -1998,6 +2006,7 @@ async function loadTalksIfNeeded() {
         state.talkSearchDocuments = null;
         state.talksStatus = "ready";
         state.talksError = "";
+        state.talksFallbackActive = true;
         console.warn("[talks] fallback to latest.json");
         return state.talks;
       }
@@ -2007,6 +2016,7 @@ async function loadTalksIfNeeded() {
 
     state.talksStatus = "error";
     state.talksError = createTargetFetchError("talks", talksFetchError).message;
+    state.talksFallbackActive = false;
     return [];
   })();
 
