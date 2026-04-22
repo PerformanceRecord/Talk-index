@@ -35,6 +35,7 @@ FAVORITES_SHEET_HEADERS = [
 
 HeadingVideoTitleMap = dict[str, dict[Any, Any]]
 VideoMetadataMap = dict[str, dict[str, str]]
+HeadingVideoCandidatesMap = dict[str, dict[str, set[str]]]
 
 
 def _text(value: Any) -> str:
@@ -172,6 +173,37 @@ def build_video_metadata_map(
     return out
 
 
+def build_heading_video_candidates_map(talks_payload: dict[str, Any]) -> HeadingVideoCandidatesMap:
+    out: HeadingVideoCandidatesMap = {
+        "by_heading_id": {},
+        "by_heading_title": {},
+    }
+    by_heading_id: dict[str, set[str]] = out["by_heading_id"]
+    by_heading_title: dict[str, set[str]] = out["by_heading_title"]
+
+    talks = talks_payload.get("talks") if isinstance(talks_payload, dict) else []
+    if not isinstance(talks, list):
+        return out
+
+    for talk in talks:
+        if not isinstance(talk, dict):
+            continue
+        heading_id = _text(talk.get("key"))
+        heading_title = _text(talk.get("name"))
+        subsections = talk.get("subsections") if isinstance(talk.get("subsections"), list) else []
+        for subsection in subsections:
+            if not isinstance(subsection, dict):
+                continue
+            video_id = extract_video_id_from_url(_text(subsection.get("videoUrl")))
+            if not video_id:
+                continue
+            if heading_id:
+                by_heading_id.setdefault(heading_id, set()).add(video_id)
+            if heading_title:
+                by_heading_title.setdefault(heading_title, set()).add(video_id)
+    return out
+
+
 def _resolve_source_video_title(item: dict[str, Any], heading_title_map: HeadingVideoTitleMap) -> str:
     direct = _text(item.get("sourceVideoTitle")) or _text(item.get("videoTitle"))
     if direct:
@@ -209,14 +241,30 @@ def build_public_sheet_rows_from_items(
     *,
     payload: dict[str, Any],
     video_metadata_map: VideoMetadataMap,
+    heading_video_candidates_map: HeadingVideoCandidatesMap | None = None,
 ) -> list[list[str]]:
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     enriched_rows: list[tuple[int, str, str, list[str]]] = []
+    by_heading_id: dict[str, set[str]] = {}
+    by_heading_title: dict[str, set[str]] = {}
+    if heading_video_candidates_map:
+        by_heading_id = heading_video_candidates_map.get("by_heading_id", {})
+        by_heading_title = heading_video_candidates_map.get("by_heading_title", {})
 
     for item in items:
         if not isinstance(item, dict):
             continue
         video_id = _text(item.get("videoId"))
+        if not video_id:
+            heading_id = _text(item.get("headingId"))
+            heading_title = _text(item.get("headingTitle"))
+            id_candidates = by_heading_id.get(heading_id, set()) if heading_id else set()
+            title_candidates = by_heading_title.get(heading_title, set()) if heading_title else set()
+            if len(id_candidates) == 1:
+                video_id = next(iter(id_candidates))
+            elif len(title_candidates) == 1:
+                video_id = next(iter(title_candidates))
+
         meta = video_metadata_map.get(video_id, {}) if video_id else {}
 
         video_date = (

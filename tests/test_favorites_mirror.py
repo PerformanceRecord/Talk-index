@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from crawler.services.favorites_mirror import (
     FAVORITES_SHEET_HEADERS,
     PUBLIC_FAVORITES_SHEET_HEADERS,
+    build_heading_video_candidates_map,
     build_heading_video_title_map,
     build_public_sheet_rows_from_items,
     build_sheet_rows_from_items,
@@ -126,6 +127,61 @@ class FavoritesMirrorTests(unittest.TestCase):
         self.assertEqual(rows[0][0], "2026-04-21")
         self.assertTrue(rows[0][1].startswith('=HYPERLINK("https://www.youtube.com/watch?v=AAAAAAAAAAA"'))
         self.assertIn('動画""2', rows[1][1])
+
+    def test_public_rows_fallback_by_heading_id_when_video_id_missing(self):
+        talks_payload = {
+            "talks": [
+                {
+                    "key": "h1",
+                    "name": "見出し1",
+                    "date": "2026-04-20",
+                    "subsections": [{"videoUrl": "https://www.youtube.com/watch?v=AAAAAAAAAAA"}],
+                }
+            ]
+        }
+        meta = {
+            "AAAAAAAAAAA": {
+                "title": "動画A",
+                "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+                "published_date": "2026-04-20",
+            }
+        }
+        payload = {"items": [{"headingId": "h1", "headingTitle": "見出し1", "voteCount": 1}]}
+
+        rows = build_public_sheet_rows_from_items(
+            payload=payload,
+            video_metadata_map=meta,
+            heading_video_candidates_map=build_heading_video_candidates_map(talks_payload),
+        )
+        self.assertEqual(rows[0][0], "2026-04-20")
+        self.assertTrue(rows[0][1].startswith('=HYPERLINK("https://www.youtube.com/watch?v=AAAAAAAAAAA"'))
+
+    def test_public_rows_ambiguous_heading_does_not_link(self):
+        talks_payload = {
+            "talks": [
+                {
+                    "key": "h1",
+                    "name": "見出し1",
+                    "subsections": [
+                        {"videoUrl": "https://www.youtube.com/watch?v=AAAAAAAAAAA"},
+                        {"videoUrl": "https://www.youtube.com/watch?v=BBBBBBBBBBB"},
+                    ],
+                }
+            ]
+        }
+        meta = {
+            "AAAAAAAAAAA": {"title": "動画A", "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA", "published_date": "2026-04-20"},
+            "BBBBBBBBBBB": {"title": "動画B", "url": "https://www.youtube.com/watch?v=BBBBBBBBBBB", "published_date": "2026-04-21"},
+        }
+        payload = {"items": [{"headingId": "h1", "headingTitle": "見出し1", "videoTitle": "候補あり", "voteCount": 1}]}
+
+        rows = build_public_sheet_rows_from_items(
+            payload=payload,
+            video_metadata_map=meta,
+            heading_video_candidates_map=build_heading_video_candidates_map(talks_payload),
+        )
+        self.assertEqual(rows[0][0], "")
+        self.assertEqual(rows[0][1], "候補あり")
 
     def test_replace_public_sheet_rows_uses_user_entered(self):
         class PublicSheet(FakeWorksheet):
