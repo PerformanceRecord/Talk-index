@@ -626,7 +626,7 @@ function buildTalkRecommendationsForTalk(talk) {
       title: hit.talk.name || "タイトルなし",
       subtitle: formatTalkRecommendationSubtitle(hit),
       reason: `${word}といえば……`,
-      searchQuery: text(talk.name),
+      searchQuery: text(hit.talk.name),
     });
   });
 
@@ -640,7 +640,7 @@ function buildTalkRecommendationsForTalk(talk) {
       title: fallback.talk.name || "タイトルなし",
       subtitle: formatTalkRecommendationSubtitle(fallback),
       reason: "こんな話題もおすすめ",
-      searchQuery: text(talk.name),
+      searchQuery: text(fallback.talk.name),
     });
   }
 
