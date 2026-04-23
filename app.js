@@ -1468,15 +1468,25 @@ async function toggleFavoriteHeading(headingId, sourceTalk = null) {
   if (!normalized) return;
   const alreadyFavorite = state.favoritedHeadingIds.has(normalized);
   if (alreadyFavorite) {
+    const hasSuccessfulVote = state.alreadyVotedHeadingIds.has(normalized);
     state.favoritedHeadingIds.delete(normalized);
     state.unsyncedFavoriteHeadingIds.delete(normalized);
-    state.alreadyVotedHeadingIds.delete(normalized);
+    if (!hasSuccessfulVote) {
+      state.alreadyVotedHeadingIds.delete(normalized);
+    }
     saveFavoritesToStorage();
     render();
     return;
   }
 
   state.favoritedHeadingIds.add(normalized);
+  if (state.alreadyVotedHeadingIds.has(normalized)) {
+    state.unsyncedFavoriteHeadingIds.delete(normalized);
+    saveFavoritesToStorage();
+    render();
+    return;
+  }
+
   state.unsyncedFavoriteHeadingIds.add(normalized);
   saveFavoritesToStorage();
   render();
