@@ -36,10 +36,29 @@ class FavoritesFrontendContractTests(unittest.TestCase):
         self.assertIn('state.alreadyVotedHeadingIds.add(normalized);', app_js)
         self.assertIn('if (state.alreadyVotedHeadingIds.has(normalized) && !state.unsyncedFavoriteHeadingIds.has(normalized)) {', app_js)
 
-    def test_toggle_off_clears_unsynced_and_voted_to_avoid_resend(self):
+    def test_toggle_off_preserves_already_voted_when_sent_before(self):
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('const hasSuccessfulVote = state.alreadyVotedHeadingIds.has(normalized);', app_js)
+        self.assertIn('if (!hasSuccessfulVote) {', app_js)
+        self.assertIn('state.alreadyVotedHeadingIds.delete(normalized);', app_js)
+
+    def test_toggle_off_on_for_already_voted_does_not_resend(self):
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('if (state.alreadyVotedHeadingIds.has(normalized)) {', app_js)
+        self.assertIn('state.unsyncedFavoriteHeadingIds.delete(normalized);', app_js)
+        self.assertIn('await syncFavoriteVote(normalized, sourceTalk);', app_js)
+
+    def test_toggle_off_for_unsent_heading_clears_unsynced_and_already_voted(self):
         app_js = Path('app.js').read_text(encoding='utf-8')
         self.assertIn('state.unsyncedFavoriteHeadingIds.delete(normalized);', app_js)
+        self.assertIn('if (!hasSuccessfulVote) {', app_js)
         self.assertIn('state.alreadyVotedHeadingIds.delete(normalized);', app_js)
+
+    def test_fail_closed_failure_keeps_unsynced_without_already_voted(self):
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('state.unsyncedFavoriteHeadingIds.add(normalized);', app_js)
+        self.assertIn('state.alreadyVotedHeadingIds.add(normalized);', app_js)
+        self.assertIn('} catch (error) {', app_js)
 
 
 if __name__ == '__main__':
