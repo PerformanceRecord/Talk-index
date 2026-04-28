@@ -33,6 +33,47 @@ class TimestampTests(unittest.TestCase):
         minors = [r[2] for r in rows if r[2]]
         self.assertEqual(minors.count("小見出し情報"), 1)
 
+    def test_tree_prefix_line_end_timestamp_is_always_minor(self):
+        text = "\n".join([
+            "00:00:00 親大見出し",
+            "├行末タイムスタンプ小見出し (0:12:34)",
+        ])
+        rows = build_timestamp_rows(
+            video_url="https://www.youtube.com/watch?v=abc123def45",
+            timestamp_sources=[TimestampSource(source_type="top", text=text)],
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "親大見出し")
+        self.assertEqual(rows[0][2], "行末タイムスタンプ小見出し")
+
+    def test_tree_prefix_bracket_remains_only_is_discarded(self):
+        text = "\n".join([
+            "00:00:00 親大見出し",
+            "├) (0:12:34)",
+            "├） （0:12:34）",
+            "├() (0:12:34)",
+            "├（） （0:12:34）",
+        ])
+        rows = build_timestamp_rows(
+            video_url="https://www.youtube.com/watch?v=abc123def45",
+            timestamp_sources=[TimestampSource(source_type="top", text=text)],
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "親大見出し")
+        self.assertEqual(rows[0][2], "")
+
+    def test_tree_symbol_variants_are_minor_target(self):
+        symbols = ["├", "┝", "└", "┗", "┣", "┠", "┡", "┢", "│", "┃"]
+        text = ["00:00:00 親大見出し"]
+        for index, symbol in enumerate(symbols, start=1):
+            text.append(f"{symbol}小見出し{index} (0:00:{index:02d})")
+        rows = build_timestamp_rows(
+            video_url="https://www.youtube.com/watch?v=abc123def45",
+            timestamp_sources=[TimestampSource(source_type="top", text="\n".join(text))],
+        )
+        minors = [r[2] for r in rows if r[2]]
+        self.assertEqual(minors, [f"小見出し{i}" for i in range(1, len(symbols) + 1)])
+
     def test_tree_prefix_and_hhmmss_grouping_from_comment(self):
         comment = "\n".join([
             "00:00:00 大見出し①",
@@ -169,6 +210,35 @@ class TimestampTests(unittest.TestCase):
         self.assertIn("ホラゲーもあるよ！", minors)
         self.assertIn("タイトル", majors)
         self.assertNotIn("）", minors)
+
+    def test_zundzkmwsuq_nine_majors_are_saved(self):
+        text = "\n".join([
+            "00:00:00 【オープニングトーク】",
+            "00:06:57 【本日のアンケート】",
+            "00:09:52 【12時間配信開催決定！！】",
+            "00:20:00 【トモコレ面白すぎ問題】",
+            "00:30:00 【最近のUFOキャッチャー】",
+            "00:40:00 【無重力マッサージチェア】",
+            "00:50:00 【年齢を重ねておおらかになった話】",
+            "01:00:00 【連絡を返さない友達=...?】",
+            "01:10:00 【エンディングトーク】",
+        ])
+        rows = build_timestamp_rows(
+            video_url="https://www.youtube.com/watch?v=ZUNdZKMWsUQ",
+            timestamp_sources=[TimestampSource(source_type="top", text=text)],
+        )
+        majors = [r[0] for r in rows]
+        self.assertEqual(majors, [
+            "【オープニングトーク】",
+            "【本日のアンケート】",
+            "【12時間配信開催決定！！】",
+            "【トモコレ面白すぎ問題】",
+            "【最近のUFOキャッチャー】",
+            "【無重力マッサージチェア】",
+            "【年齢を重ねておおらかになった話】",
+            "【連絡を返さない友達=...?】",
+            "【エンディングトーク】",
+        ])
 
 
 if __name__ == "__main__":
