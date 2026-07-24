@@ -2,6 +2,7 @@
   "name": "talk-index",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Deterministic static build contract for Talk-index Cloudflare Workers Builds",
   "engines": {
     "node": "20.x",
