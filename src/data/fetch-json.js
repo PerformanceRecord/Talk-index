@@ -47,7 +47,7 @@ export function createInvalidJsonShapeError(message = "JSON形式が不正です
 export async function fetchJson(url, options = {}) {
   let response;
   try {
-    response = await fetch(url, { cache: "no-store", ...options });
+    response = await fetch(url, { cache: "no-cache", ...options });
   } catch {
     throw new Error("ネットワークエラー");
   }

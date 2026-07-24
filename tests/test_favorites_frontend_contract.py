@@ -3,6 +3,47 @@ from pathlib import Path
 
 
 class FavoritesFrontendContractTests(unittest.TestCase):
+    def test_theme_exploration_replaces_random_and_aggregate_shelves(self):
+        html = Path('index.html').read_text(encoding='utf-8')
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('テーマ探索', html)
+        self.assertIn('テーマを探す', html)
+        self.assertNotIn('ランダムおすすめ', html)
+        self.assertIn('function renderExplorationHub', app_js)
+        self.assertIn('function openTalkForExploration', app_js)
+        self.assertIn('function createExplorationTrail', app_js)
+        self.assertNotIn('function createFavoritePanel', app_js)
+        self.assertNotIn('function pickRandomSection', app_js)
+
+    def test_related_theme_keeps_talk_context(self):
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('openTalkForExploration(item.id, sourceTalkKey);', app_js)
+        self.assertIn('state.viewMode = "talk";', app_js)
+        self.assertIn('state.focusedTalkKeys = new Set([talk.key]);', app_js)
+        self.assertIn('title.textContent = "次に掘るテーマ";', app_js)
+
+    def test_video_and_talk_views_have_cross_navigation(self):
+        html = Path('index.html').read_text(encoding='utf-8')
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('動画から探す', html)
+        self.assertIn('function openTalkScreenForVideo', app_js)
+        self.assertIn('function openVideoScreenForTalk', app_js)
+        self.assertIn('収録トークを見る', app_js)
+        self.assertIn('関連動画を見る', app_js)
+        self.assertIn('動画へ戻る', app_js)
+        self.assertIn('トークへ戻る', app_js)
+
+    def test_search_is_cross_mode(self):
+        html = Path('index.html').read_text(encoding='utf-8')
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertIn('動画タイトル・トークテーマを横断検索', html)
+        self.assertIn('function renderSearchOverview', app_js)
+        self.assertIn('動画タイトル・トークテーマから検索', app_js)
+        self.assertIn('if (includesKeyword(video.title, search.keyword)) return true;', app_js)
+        self.assertIn('const titleMatched = includesKeyword(getTalkVideoTitle(talk), search.keyword);', app_js)
+        self.assertIn('loadSearchIndexIfNeeded()', app_js)
+        self.assertIn('loadTalksIfNeeded()', app_js)
+
     def test_html_does_not_render_recent_recommendations_feed(self):
         app_js = Path('app.js').read_text(encoding='utf-8')
         self.assertIn('fetchFavoritesAggregate("recentUpload")', app_js)

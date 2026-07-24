@@ -5,6 +5,10 @@ import {
   fetchRecentUploadRecommendations,
   sendFavoriteVote as sendFavoriteVoteRequest,
 } from "./src/features/favorites.js";
+import {
+  findTalksForVideo,
+  findVideosForTalk,
+} from "./src/features/cross-navigation.js";
 import { getModeMessage } from "./src/ui/render-messages.js";
 
 const configuredDataUrl = text(window.TALK_INDEX_DATA_URL);
@@ -48,11 +52,13 @@ const state = {
   skippedRows: 0,
   openVideoKeys: new Set(),
   openTalkKeys: new Set(),
+  focusedVideoKeys: null,
   isVideoExpandLock: false,
   videoAutoCollapseAnchor: null,
   viewMode: "video",
-  randomSection: "",
-  randomTalkKeys: null,
+  focusedTalkKeys: null,
+  navigationContext: null,
+  explorationTrail: [],
   newVideoHighlightKeys: new Set(),
   isNewVideoHighlightVisible: true,
   videoDetailsCache: new Map(),
@@ -65,8 +71,6 @@ const state = {
   favoritedHeadingIds: new Set(),
   alreadyVotedHeadingIds: new Set(),
   unsyncedFavoriteHeadingIds: new Set(),
-  favoritePanelOpenKeys: new Set(),
-  favoritesRecent: null,
   favoritesRecentUpload: null,
   favoritesHall: null,
   favoritesCurrentRanking: null,
@@ -105,8 +109,6 @@ const TOKEN_STOP_WORDS = new Set([
 ]);
 
 
-const TALK_RECOMMENDATION_WORD_COUNT = 2;
-const TALK_RECOMMENDATION_MIN_SCORE = 3;
 const TALK_RECOMMENDATION_STOP_WORDS = new Set([
   "話", "こと", "これ", "それ", "もの", "やつ", "ほんま", "まじ", "やばい",
   "すごい", "無理", "なるほど", "感じ", "みたい", "とき", "時", "自分", "相手", "返事",
@@ -115,13 +117,18 @@ const TALK_RECOMMENDATION_STOP_WORDS = new Set([
 
 const refs = {
   search: document.getElementById("search"),
+  modeEyebrow: document.getElementById("mode-eyebrow"),
+  modeTitle: document.getElementById("mode-title"),
+  modeDescription: document.getElementById("mode-description"),
+  modeContext: document.getElementById("mode-context"),
+  searchOverview: document.getElementById("search-overview"),
   notice: document.getElementById("notice"),
   error: document.getElementById("error"),
   results: document.getElementById("results"),
   serverStatus: document.getElementById("server-status"),
   toggleAll: document.getElementById("toggle-all"),
   clearSearch: document.getElementById("clear-search"),
-  randomSection: document.getElementById("random-section"),
+  exploreTheme: document.getElementById("explore-theme"),
   tabVideo: document.getElementById("tab-video"),
   tabTalk: document.getElementById("tab-talk"),
   tabFavorites: document.getElementById("tab-favorites"),
@@ -137,8 +144,8 @@ const FAVORITES_STORAGE_KEYS = {
   unsyncedIds: "talk_index:favorites:unsynced_heading_ids",
 };
 
-const AMBIENT_BUBBLE_COUNT = window.innerWidth < 700 ? 16 : 24;
-const AMBIENT_STAR_COUNT = window.innerWidth < 700 ? 32 : 48;
+const AMBIENT_BUBBLE_COUNT = window.innerWidth < 700 ? 8 : 12;
+const AMBIENT_STAR_COUNT = window.innerWidth < 700 ? 16 : 24;
 const ambientScene = {
   bubbles: [],
   stars: [],
@@ -146,9 +153,12 @@ const ambientScene = {
   height: window.innerHeight,
   lastTick: 0,
   rafId: 0,
+  initialized: false,
   reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    || window.matchMedia("(pointer: fine)").matches,
+    || window.matchMedia("(pointer: fine)").matches
+    || navigator.connection?.saveData === true,
 };
+let viewportUpdateFrameId = 0;
 
 function text(value) {
   return String(value || "").trim();
@@ -456,92 +466,6 @@ function normalizeRecommendationToken(rawToken) {
   return token;
 }
 
-function extractRecommendationTokens(raw) {
-  const src = normalizeRecommendationText(raw);
-  if (!src) return [];
-  const words = src.match(/[一-龠ぁ-んァ-ヶーa-zA-Z0-9]+/g) || [];
-  const unique = new Set();
-  words.forEach((word) => {
-    const token = normalizeRecommendationToken(word);
-    if (token) unique.add(token);
-  });
-  return Array.from(unique);
-}
-
-function buildTalkCandidatePool(talk) {
-  const scoreMap = new Map();
-  const subCounts = new Map();
-
-  const majorTokens = extractRecommendationTokens(talk.name);
-  majorTokens.forEach((token) => {
-    scoreMap.set(token, (scoreMap.get(token) || 0) + 6);
-  });
-
-  const subsectionTokens = [];
-  talk.subsections.forEach((sub) => {
-    const tokens = extractRecommendationTokens(sub.name);
-    subsectionTokens.push(...tokens);
-    const seen = new Set(tokens);
-    seen.forEach((token) => {
-      subCounts.set(token, (subCounts.get(token) || 0) + 1);
-      scoreMap.set(token, (scoreMap.get(token) || 0) + 3);
-    });
-  });
-
-  subCounts.forEach((count, token) => {
-    if (count >= 2) scoreMap.set(token, (scoreMap.get(token) || 0) + (count - 1));
-  });
-
-  const scored = Array.from(scoreMap.entries())
-    .map(([token, score]) => ({ token, score }))
-    .sort((a, b) => b.score - a.score || a.token.localeCompare(b.token));
-
-  return {
-    majorTokens,
-    subsectionTokens: Array.from(new Set(subsectionTokens)),
-    scored,
-  };
-}
-
-function pickQueryWordFromPool(candidates, usedWords) {
-  const filtered = candidates.filter((item) => !usedWords.has(item.token));
-  if (!filtered.length) return "";
-  const topScore = filtered[0].score;
-  const strongPool = filtered.filter((item) => item.score >= Math.max(1, topScore - 2)).slice(0, 5);
-  if (!strongPool.length) return "";
-  const picked = strongPool[Math.floor(Math.random() * strongPool.length)];
-  return picked?.token || "";
-}
-
-function chooseTalkRecommendationQueryWords(talk) {
-  const pool = buildTalkCandidatePool(talk);
-  const usedWords = new Set();
-  const words = [];
-
-  const majorRanked = pool.scored.filter((item) => pool.majorTokens.includes(item.token));
-  const majorWord = pickQueryWordFromPool(majorRanked, usedWords);
-  if (majorWord) {
-    words.push(majorWord);
-    usedWords.add(majorWord);
-  }
-
-  const subRanked = pool.scored.filter((item) => pool.subsectionTokens.includes(item.token));
-  const subWord = pickQueryWordFromPool(subRanked, usedWords);
-  if (subWord) {
-    words.push(subWord);
-    usedWords.add(subWord);
-  }
-
-  while (words.length < TALK_RECOMMENDATION_WORD_COUNT) {
-    const fallbackWord = pickQueryWordFromPool(pool.scored, usedWords);
-    if (!fallbackWord) break;
-    words.push(fallbackWord);
-    usedWords.add(fallbackWord);
-  }
-
-  return words.slice(0, TALK_RECOMMENDATION_WORD_COUNT);
-}
-
 function buildTalkSearchDocumentsIfNeeded() {
   if (state.talkSearchDocuments) return state.talkSearchDocuments;
   state.talkSearchDocuments = state.talks.map((talk) => {
@@ -577,6 +501,21 @@ function extractRecommendationWords(texts) {
     tokens.forEach((token) => {
       const word = normalizeRecommendationToken(token);
       if (word) words.add(word);
+    });
+    const japanesePhrases = normalized.match(/[一-龠ぁ-んァ-ヶー]{2,}/g) || [];
+    japanesePhrases.forEach((phrase) => {
+      phrase
+        .split(/(?:について|に関して|から|まで|より|ので|のに|[のにはをがとへでやも])/)
+        .filter((chunk) => chunk.length >= 2)
+        .forEach((chunk) => {
+          if (chunk.length <= 8) words.add(chunk);
+          for (const size of [2, 3]) {
+            if (chunk.length < size) continue;
+            for (let index = 0; index <= chunk.length - size; index += 1) {
+              words.add(chunk.slice(index, index + size));
+            }
+          }
+        });
     });
   });
   return Array.from(words);
@@ -629,63 +568,22 @@ function getFavoriteCountByTalkKey(talkKey) {
 
 function collectTalkRecommendationCandidates(currentTalk) {
   const sourceWords = extractRecommendationWords([currentTalk?.name, ...getChildHeadingTexts(currentTalk)]);
+  const currentVideoKey = getTalkVideoKey(currentTalk);
   return buildTalkSearchDocumentsIfNeeded()
     .filter((doc) => doc.key !== currentTalk.key)
-    .map((doc) => ({
-      doc,
-      id: doc.key,
-      title: doc.talk.name || "タイトルなし",
-      normalizedTitle: doc.titleNormalized || normalizeRecommendationTitle(doc.talk.name),
-      relevanceScore: computeRecommendationScore(sourceWords, doc.talk.name, doc.childHeadingTexts),
-      favoriteCount: getFavoriteCountByTalkKey(doc.key),
-    }));
-}
-
-function pickPrimaryRecommendation(candidates, currentTalkKey) {
-  const ranked = candidates
-    .filter((candidate) => candidate.relevanceScore > 0)
-    .slice()
-    .sort((a, b) => b.relevanceScore - a.relevanceScore || stableHash(`${currentTalkKey}:${a.id}`) - stableHash(`${currentTalkKey}:${b.id}`));
-  const selected = ranked[0];
-  if (!selected) return null;
-  return {
-    id: selected.id,
-    title: selected.title,
-    subtitle: formatTalkRecommendationSubtitle(selected.doc),
-    reason: "関連する話題",
-    searchQuery: text(selected.title),
-    normalizedTitle: selected.normalizedTitle,
-  };
-}
-
-function pickDiscoveryRecommendation(candidates, currentTalkKey, excludeKeys, excludeTitles) {
-  const base = candidates.filter((candidate) => {
-    if (excludeKeys.has(candidate.id)) return false;
-    if (excludeTitles.has(candidate.normalizedTitle)) return false;
-    return candidate.favoriteCount > 0;
-  });
-  const bands = [
-    (score) => score >= 20 && score <= 60,
-    (score) => score >= 10 && score <= 79,
-    (score) => score > 0,
-  ];
-  for (const inBand of bands) {
-    const pool = base
-      .filter((candidate) => inBand(candidate.relevanceScore))
-      .slice()
-      .sort((a, b) => stableHash(`${currentTalkKey}:${a.id}`) - stableHash(`${currentTalkKey}:${b.id}`) || a.id.localeCompare(b.id));
-    if (!pool.length) continue;
-    const selected = pool[0];
-    return {
-      id: selected.id,
-      title: selected.title,
-      subtitle: formatTalkRecommendationSubtitle(selected.doc),
-      reason: "こんな話題もおすすめ",
-      searchQuery: text(selected.title),
-      normalizedTitle: selected.normalizedTitle,
-    };
-  }
-  return null;
+    .map((doc) => {
+      const sameSource = !!currentVideoKey && getTalkVideoKey(doc.talk) === currentVideoKey;
+      return {
+        doc,
+        id: doc.key,
+        title: doc.talk.name || "タイトルなし",
+        normalizedTitle: doc.titleNormalized || normalizeRecommendationTitle(doc.talk.name),
+        relevanceScore: computeRecommendationScore(sourceWords, doc.talk.name, doc.childHeadingTexts)
+          + (sameSource ? 2 : 0),
+        favoriteCount: getFavoriteCountByTalkKey(doc.key),
+        sameSource,
+      };
+    });
 }
 
 function formatTalkRecommendationSubtitle(doc) {
@@ -698,22 +596,29 @@ function buildTalkRecommendationsForTalk(talk) {
   const cached = state.talkRecommendationCache.get(talk.key);
   if (cached) return cached;
 
-  const candidates = collectTalkRecommendationCandidates(talk);
-  const excludeKeys = new Set([talk.key]);
-  const excludeTitles = new Set([normalizeRecommendationTitle(talk.name)]);
-  const recommendations = [];
-
-  const primary = pickPrimaryRecommendation(candidates, talk.key);
-  if (primary) {
-    recommendations.push(primary);
-    excludeKeys.add(primary.id);
-    excludeTitles.add(primary.normalizedTitle);
-  }
-
-  const discovery = pickDiscoveryRecommendation(candidates, talk.key, excludeKeys, excludeTitles);
-  if (discovery) recommendations.push(discovery);
-
-  const finalItems = recommendations.slice(0, 2).map(({ normalizedTitle, ...item }) => item);
+  const seenTitles = new Set([normalizeRecommendationTitle(talk.name)]);
+  const finalItems = collectTalkRecommendationCandidates(talk)
+    .filter((candidate) => candidate.relevanceScore > 0)
+    .sort((a, b) => (
+      b.relevanceScore - a.relevanceScore
+      || b.favoriteCount - a.favoriteCount
+      || compareDateDesc(a.doc.date, b.doc.date)
+      || stableHash(`${talk.key}:${a.id}`) - stableHash(`${talk.key}:${b.id}`)
+    ))
+    .filter((candidate) => {
+      if (seenTitles.has(candidate.normalizedTitle)) return false;
+      seenTitles.add(candidate.normalizedTitle);
+      return true;
+    })
+    .slice(0, 3)
+    .map((candidate) => ({
+      id: candidate.id,
+      title: candidate.title,
+      subtitle: formatTalkRecommendationSubtitle(candidate.doc),
+      reason: candidate.sameSource
+        ? "同じ配信の続き"
+        : (candidate.favoriteCount > 0 ? "よく保存される関連テーマ" : "キーワードが近い"),
+    }));
   state.talkRecommendationCache.set(talk.key, finalItems);
   return finalItems;
 }
@@ -1180,7 +1085,8 @@ function updateAmbientBubbles(deltaSec, elapsedSec) {
 }
 
 function animateAmbientScene(timestamp) {
-  if (ambientScene.reducedMotion) return;
+  ambientScene.rafId = 0;
+  if (ambientScene.reducedMotion || document.hidden) return;
   if (!ambientScene.lastTick) ambientScene.lastTick = timestamp;
   const deltaSec = Math.min((timestamp - ambientScene.lastTick) / 1000, 0.05);
   ambientScene.lastTick = timestamp;
@@ -1194,7 +1100,8 @@ function refreshAmbientViewport() {
 }
 
 function initAmbientScene() {
-  if (!refs.bubbleLayer || !refs.starLayer) return;
+  if (ambientScene.initialized || !refs.bubbleLayer || !refs.starLayer) return;
+  ambientScene.initialized = true;
   refs.bubbleLayer.innerHTML = "";
   refs.starLayer.innerHTML = "";
 
@@ -1208,6 +1115,41 @@ function initAmbientScene() {
     return;
   }
   ambientScene.rafId = window.requestAnimationFrame(animateAmbientScene);
+}
+
+function stopAmbientAnimation() {
+  if (ambientScene.rafId) window.cancelAnimationFrame(ambientScene.rafId);
+  ambientScene.rafId = 0;
+  ambientScene.lastTick = 0;
+}
+
+function startAmbientAnimation() {
+  if (!ambientScene.initialized || ambientScene.reducedMotion || ambientScene.rafId || document.hidden) return;
+  ambientScene.rafId = window.requestAnimationFrame(animateAmbientScene);
+}
+
+function scheduleAmbientSceneInit() {
+  const initialize = () => initAmbientScene();
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(initialize, { timeout: 1000 });
+  } else {
+    window.setTimeout(initialize, 100);
+  }
+}
+
+function scheduleViewportUpdate() {
+  if (viewportUpdateFrameId) return;
+  viewportUpdateFrameId = window.requestAnimationFrame(() => {
+    viewportUpdateFrameId = 0;
+    updateScrollGradient();
+    updateAmbientTransitionByCards();
+    handleVideoAutoCollapseByCardPass();
+    const before = state.isNewVideoHighlightVisible;
+    updateNewVideoHighlightVisibility();
+    if (before !== state.isNewVideoHighlightVisible && state.viewMode === "video") {
+      render();
+    }
+  });
 }
 
 function createHeadingFormattedSpan(raw) {
@@ -1235,6 +1177,12 @@ function findTalkByHeadingId(headingId) {
   return state.talks.find((talk) => getHeadingIdFromObject(talk, talk.name) === normalized)
     || state.talks.find((talk) => text(talk.name) === normalized)
     || null;
+}
+
+function findTalkByKey(talkKey) {
+  const normalized = text(talkKey);
+  if (!normalized) return null;
+  return state.talks.find((talk) => text(talk?.key) === normalized) || null;
 }
 
 function isFavoritedHeading(headingId) {
@@ -1495,7 +1443,10 @@ async function toggleFavoriteHeading(headingId, sourceTalk = null) {
 
 function getFilteredVideos(search = parseSearch(state.search)) {
   const matchedIds = collectMatchedIdsFromStore(state.recommendation?.video, search);
-  return state.videos
+  const candidates = state.focusedVideoKeys
+    ? state.videos.filter((video) => state.focusedVideoKeys.has(video.key))
+    : state.videos;
+  return candidates
     .filter((video) => {
       if (matchedIds instanceof Set && hitVideoBySearchIndex(video, matchedIds)) return true;
       return hitVideo(video, search);
@@ -1507,8 +1458,8 @@ function getFilteredVideos(search = parseSearch(state.search)) {
 function getFilteredTalks(search = parseSearch(state.search)) {
   const matchedIds = collectMatchedIdsFromStore(state.recommendation?.talk, search);
   let candidates = state.talks;
-  if (state.randomTalkKeys) {
-    candidates = candidates.filter((talk) => state.randomTalkKeys.has(talk.key));
+  if (state.focusedTalkKeys) {
+    candidates = candidates.filter((talk) => state.focusedTalkKeys.has(talk.key));
   }
 
   // 検索一致フラグを先に計算し、タイトル一致フォールバックに再利用する。
@@ -1565,6 +1516,124 @@ function getFilteredTalks(search = parseSearch(state.search)) {
     .sort((a, b) => compareDateDesc(a.date, b.date));
 }
 
+function findVideoByKey(videoKey) {
+  const normalized = text(videoKey);
+  if (!normalized) return null;
+  return state.videos.find((video) => text(video?.key) === normalized) || null;
+}
+
+function clearSearchForNavigation() {
+  state.search = "";
+  refs.search.value = "";
+}
+
+function scrollToResultsStart() {
+  requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+}
+
+async function openTalkScreenForVideo(videoKey, talkName = "") {
+  const video = findVideoByKey(videoKey);
+  if (!video) return;
+  await loadTalksIfNeeded();
+
+  const relatedTalks = findTalksForVideo(video, state.talks);
+  const requestedName = text(talkName);
+  const exactTalk = requestedName
+    ? relatedTalks.find((talk) => text(talk?.name) === requestedName || text(talk?.key) === requestedName)
+    : null;
+  const shownTalks = exactTalk ? [exactTalk] : relatedTalks;
+
+  if (!shownTalks.length) {
+    refs.notice.textContent = `「${video.title}」に対応するトークテーマが見つかりませんでした。`;
+    return;
+  }
+
+  clearSearchForNavigation();
+  state.viewMode = "talk";
+  state.focusedVideoKeys = null;
+  state.focusedTalkKeys = new Set(shownTalks.map((talk) => talk.key));
+  state.openVideoKeys = new Set();
+  state.openTalkKeys = exactTalk || shownTalks.length === 1
+    ? new Set([shownTalks[0].key])
+    : new Set();
+  state.navigationContext = {
+    sourceMode: "video",
+    sourceKey: video.key,
+    sourceLabel: video.title,
+    targetCount: shownTalks.length,
+  };
+  render();
+  scrollToResultsStart();
+}
+
+async function openVideoScreenForTalk(talkKey) {
+  await loadTalksIfNeeded();
+  const talk = findTalkByKey(talkKey);
+  if (!talk) return;
+  const relatedVideos = findVideosForTalk(talk, state.videos);
+
+  if (!relatedVideos.length) {
+    refs.notice.textContent = `「${talk.name}」に対応する動画が見つかりませんでした。`;
+    return;
+  }
+
+  clearSearchForNavigation();
+  state.viewMode = "video";
+  state.focusedTalkKeys = null;
+  state.focusedVideoKeys = new Set(relatedVideos.map((video) => video.key));
+  state.openTalkKeys = new Set();
+  state.openVideoKeys = new Set([relatedVideos[0].key]);
+  state.isVideoExpandLock = false;
+  state.videoAutoCollapseAnchor = null;
+  state.navigationContext = {
+    sourceMode: "talk",
+    sourceKey: talk.key,
+    sourceLabel: talk.name,
+    targetCount: relatedVideos.length,
+  };
+  render();
+  if (!Array.isArray(relatedVideos[0].sections)) {
+    void ensureVideoDetailsLoaded(relatedVideos[0]).then(() => render());
+  }
+  scrollToResultsStart();
+}
+
+function returnToNavigationSource() {
+  const context = state.navigationContext;
+  if (!context) return;
+  state.navigationContext = null;
+  clearSearchForNavigation();
+
+  if (context.sourceMode === "video") {
+    const video = findVideoByKey(context.sourceKey);
+    if (!video) return;
+    state.viewMode = "video";
+    state.focusedTalkKeys = null;
+    state.focusedVideoKeys = new Set([video.key]);
+    state.openTalkKeys = new Set();
+    state.openVideoKeys = new Set([video.key]);
+  } else {
+    const talk = findTalkByKey(context.sourceKey);
+    if (!talk) return;
+    state.viewMode = "talk";
+    state.focusedVideoKeys = null;
+    state.focusedTalkKeys = new Set([talk.key]);
+    state.openVideoKeys = new Set();
+    state.openTalkKeys = new Set([talk.key]);
+  }
+  render();
+  scrollToResultsStart();
+}
+
+function clearNavigationContext() {
+  state.navigationContext = null;
+  state.focusedVideoKeys = null;
+  state.focusedTalkKeys = null;
+  state.openVideoKeys = new Set();
+  state.openTalkKeys = new Set();
+  render();
+}
+
 function getDisplayedVideoOpenKeys(videos) {
   if (state.isVideoExpandLock) {
     return new Set(videos.map((video) => video.key));
@@ -1607,6 +1676,93 @@ function updateTabs() {
   refs.tabFavorites.setAttribute("aria-selected", isFavorites ? "true" : "false");
 }
 
+function updateModeHeader() {
+  const presentation = state.viewMode === "video"
+    ? {
+      eyebrow: "VIDEO INDEX",
+      title: "動画から探す",
+      description: "配信ごとに、収録されているトークをまとめて確認できます。",
+    }
+    : state.viewMode === "talk"
+      ? {
+        eyebrow: "TALK INDEX",
+        title: "トークテーマから探す",
+        description: "気になる話題から、収録動画や次の関連テーマへ移動できます。",
+      }
+      : {
+        eyebrow: "DISCOVER",
+        title: "テーマを深掘りする",
+        description: "入口となるテーマを選び、関連するトークを次々にたどれます。",
+      };
+  refs.modeEyebrow.textContent = presentation.eyebrow;
+  refs.modeTitle.textContent = presentation.title;
+  refs.modeDescription.textContent = presentation.description;
+}
+
+function renderModeContext() {
+  refs.modeContext.innerHTML = "";
+  const context = state.navigationContext;
+  if (!context) {
+    refs.modeContext.hidden = true;
+    return;
+  }
+
+  const message = document.createElement("span");
+  if (context.sourceMode === "video") {
+    message.textContent = `動画「${context.sourceLabel}」のトーク ${context.targetCount}件を表示中`;
+  } else {
+    message.textContent = `トーク「${context.sourceLabel}」の関連動画 ${context.targetCount}件を表示中`;
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "mode-context-actions";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = context.sourceMode === "video" ? "動画へ戻る" : "トークへ戻る";
+  back.addEventListener("click", returnToNavigationSource);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "一覧表示";
+  clear.addEventListener("click", clearNavigationContext);
+  actions.append(back, clear);
+
+  refs.modeContext.append(message, actions);
+  refs.modeContext.hidden = false;
+}
+
+function renderSearchOverview(search) {
+  refs.searchOverview.innerHTML = "";
+  if (canSkipSearch(search)) {
+    refs.searchOverview.hidden = true;
+    return;
+  }
+
+  const videoCount = getFilteredVideos(search).length;
+  const talkCount = search.mode === "tag"
+    ? 0
+    : (state.talksStatus === "ready" ? getFilteredTalks(search).length : null);
+  const label = document.createElement("span");
+  label.className = "search-overview-label";
+  label.textContent = `「${state.search}」を動画タイトル・トークテーマから検索`;
+
+  const videoButton = document.createElement("button");
+  videoButton.type = "button";
+  videoButton.classList.toggle("is-active", state.viewMode === "video");
+  videoButton.setAttribute("aria-pressed", state.viewMode === "video" ? "true" : "false");
+  videoButton.textContent = `動画 ${videoCount}件`;
+  videoButton.addEventListener("click", () => void switchViewMode("video"));
+
+  const talkButton = document.createElement("button");
+  talkButton.type = "button";
+  talkButton.classList.toggle("is-active", state.viewMode === "talk");
+  talkButton.setAttribute("aria-pressed", state.viewMode === "talk" ? "true" : "false");
+  talkButton.textContent = talkCount === null ? "トーク 読込中…" : `トーク ${talkCount}件`;
+  talkButton.addEventListener("click", () => void switchViewMode("talk"));
+
+  refs.searchOverview.append(label, videoButton, talkButton);
+  refs.searchOverview.hidden = false;
+}
+
 function updateServerStatus(mode, shownCount = 0) {
   refs.serverStatus.classList.remove("server-status--loading", "server-status--error", "server-status--ok");
   if (mode === "loading") {
@@ -1647,13 +1803,13 @@ function pickAmbientTone(values) {
   return "base";
 }
 
-function createRecommendationBlock(items, mode) {
+function createRecommendationBlock(items, sourceTalkKey) {
   const wrap = document.createElement("section");
   wrap.className = "recommend";
 
   const title = document.createElement("h4");
   title.className = "recommend-title";
-  title.textContent = "おすすめ🫵";
+  title.textContent = "次に掘るテーマ";
   wrap.appendChild(title);
 
   if (!items.length) {
@@ -1674,6 +1830,7 @@ function createRecommendationBlock(items, mode) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "recommend-button";
+    button.setAttribute("aria-label", `${item.title}を次のテーマとして開く`);
 
     const main = document.createElement("span");
     main.className = "recommend-main";
@@ -1689,7 +1846,7 @@ function createRecommendationBlock(items, mode) {
 
     button.append(main, sub, reason);
     button.addEventListener("click", () => {
-      void applyRecommendationSearch(item);
+      openTalkForExploration(item.id, sourceTalkKey);
     });
 
     li.appendChild(button);
@@ -1699,46 +1856,92 @@ function createRecommendationBlock(items, mode) {
   return wrap;
 }
 
-async function applyRecommendationSearch(item) {
-  const searchQuery = text(item?.searchQuery || item?.title);
-  if (!searchQuery) return;
+function buildExplorationTrail(nextKey, sourceKey = "") {
+  let trail = state.explorationTrail.slice();
+  const normalizedSource = text(sourceKey);
+  const normalizedNext = text(nextKey);
 
-  state.viewMode = "video";
-  state.search = searchQuery;
-  refs.search.value = searchQuery;
-  state.randomTalkKeys = null;
-  state.randomSection = "";
-  state.openTalkKeys = new Set();
+  if (normalizedSource) {
+    const sourceIndex = trail.indexOf(normalizedSource);
+    if (sourceIndex >= 0) trail = trail.slice(0, sourceIndex + 1);
+    else if (trail[trail.length - 1] !== normalizedSource) trail.push(normalizedSource);
+  }
+
+  const existingIndex = trail.indexOf(normalizedNext);
+  if (existingIndex >= 0) trail = trail.slice(0, existingIndex + 1);
+  else trail.push(normalizedNext);
+  return trail.slice(-6);
+}
+
+function openTalkForExploration(talkKey, sourceKey = "") {
+  const talk = findTalkByKey(talkKey);
+  if (!talk) return;
+  state.explorationTrail = buildExplorationTrail(talk.key, sourceKey);
+  state.navigationContext = null;
+  state.focusedVideoKeys = null;
+  state.focusedTalkKeys = new Set([talk.key]);
+  state.openTalkKeys = new Set([talk.key]);
   state.openVideoKeys = new Set();
   state.isVideoExpandLock = false;
   state.videoAutoCollapseAnchor = null;
-
-  if (state.searchIndexStatus === "idle") {
-    await loadSearchIndexIfNeeded();
-  }
-
+  state.viewMode = "talk";
+  state.search = "";
+  refs.search.value = "";
   render();
-  requestAnimationFrame(() => {
-    window.scrollTo({ top: 0, behavior: "smooth" });
-    refs.search.focus();
-  });
+  requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
 }
 
-function openCardFromRecommendation(mode, key) {
-  if (mode === "video") {
-    state.viewMode = "video";
-    state.openVideoKeys.add(key);
-  } else {
-    state.viewMode = "talk";
-    state.openTalkKeys.add(key);
-  }
-  state.randomTalkKeys = null;
-  state.randomSection = "";
+function openExplorationTrailAt(index) {
+  const talkKey = state.explorationTrail[index];
+  if (!talkKey || !findTalkByKey(talkKey)) return;
+  state.explorationTrail = state.explorationTrail.slice(0, index + 1);
+  state.focusedTalkKeys = new Set([talkKey]);
+  state.openTalkKeys = new Set([talkKey]);
   render();
-  requestAnimationFrame(() => {
-    const card = refs.results.querySelector(`.card[data-key="${CSS.escape(key)}"]`);
-    if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function createExplorationTrail() {
+  if (!state.focusedTalkKeys || state.explorationTrail.length === 0) return null;
+  const nav = document.createElement("nav");
+  nav.className = "exploration-trail";
+  nav.setAttribute("aria-label", "テーマの深掘り履歴");
+
+  const label = document.createElement("span");
+  label.className = "exploration-trail-label";
+  label.textContent = "たどったテーマ";
+  nav.appendChild(label);
+
+  state.explorationTrail.forEach((talkKey, index) => {
+    const talk = findTalkByKey(talkKey);
+    if (!talk) return;
+    if (index > 0) {
+      const separator = document.createElement("span");
+      separator.className = "exploration-trail-separator";
+      separator.textContent = "›";
+      separator.setAttribute("aria-hidden", "true");
+      nav.appendChild(separator);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "exploration-trail-button";
+    button.textContent = talk.name;
+    button.disabled = index === state.explorationTrail.length - 1;
+    button.addEventListener("click", () => openExplorationTrailAt(index));
+    nav.appendChild(button);
   });
+
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "exploration-trail-reset";
+  reset.textContent = "入口に戻る";
+  reset.addEventListener("click", () => {
+    state.viewMode = "favorites";
+    state.focusedTalkKeys = null;
+    state.openTalkKeys = new Set();
+    render();
+  });
+  nav.appendChild(reset);
+  return nav;
 }
 
 function updateNewVideoHighlightVisibility() {
@@ -1774,6 +1977,10 @@ function renderCards(videos) {
 
     const summary = document.createElement("div");
     summary.className = "card-summary";
+    summary.tabIndex = state.isVideoExpandLock ? -1 : 0;
+    summary.setAttribute("role", "button");
+    summary.setAttribute("aria-expanded", openKeys.has(video.key) ? "true" : "false");
+    summary.setAttribute("aria-label", `${video.title}の詳細を${openKeys.has(video.key) ? "閉じる" : "開く"}`);
 
     const main = document.createElement("div");
     main.className = "card-main";
@@ -1799,6 +2006,7 @@ function renderCards(videos) {
     thumb.className = "thumbnail";
     thumb.alt = "サムネイル";
     thumb.loading = "lazy";
+    thumb.decoding = "async";
     if (video.thumb) {
       thumb.src = video.thumb;
     }
@@ -1809,6 +2017,18 @@ function renderCards(videos) {
 
     side.append(thumb, dateCorner);
     summary.append(main, side);
+
+    const cardActions = document.createElement("div");
+    cardActions.className = "card-mode-actions";
+    const showTalksButton = document.createElement("button");
+    showTalksButton.type = "button";
+    showTalksButton.className = "cross-mode-action";
+    showTalksButton.textContent = "収録トークを見る";
+    showTalksButton.setAttribute("aria-label", `${video.title}に収録されたトークを見る`);
+    showTalksButton.addEventListener("click", () => {
+      void openTalkScreenForVideo(video.key);
+    });
+    cardActions.appendChild(showTalksButton);
 
     const detail = document.createElement("div");
     detail.className = "card-detail";
@@ -1852,7 +2072,15 @@ function renderCards(videos) {
           "favorite-toggle--section",
           (id) => toggleFavoriteHeading(id, { video, section: sec }),
         );
-        head.append(toggle, label, favoriteButton);
+        const showTalkButton = document.createElement("button");
+        showTalkButton.type = "button";
+        showTalkButton.className = "section-mode-button";
+        showTalkButton.textContent = "テーマ表示";
+        showTalkButton.setAttribute("aria-label", `${sec.name}をトーク単位で表示`);
+        showTalkButton.addEventListener("click", () => {
+          void openTalkScreenForVideo(video.key, sec.name);
+        });
+        head.append(toggle, label, showTalkButton, favoriteButton);
 
         const subList = document.createElement("ul");
         subList.className = "sub-list";
@@ -1907,7 +2135,7 @@ function renderCards(videos) {
     }
 
     detail.append(sectionList, tags);
-    summary.addEventListener("click", async () => {
+    const toggleCard = async () => {
       if (state.isVideoExpandLock) return;
       if (state.openVideoKeys.has(video.key)) {
         state.openVideoKeys.delete(video.key);
@@ -1923,11 +2151,55 @@ function renderCards(videos) {
         }
       }
       render();
+    };
+    summary.addEventListener("click", (event) => {
+      if (event.target.closest?.("a, button, input, select, textarea")) return;
+      void toggleCard();
+    });
+    summary.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      void toggleCard();
     });
 
-    card.append(summary, detail);
+    card.append(summary, cardActions, detail);
     refs.results.appendChild(card);
   });
+}
+
+function populateTalkDetail(detail, talk, showRecommendations) {
+  if (detail.dataset.loaded === "true") return;
+  detail.dataset.loaded = "true";
+
+  const subList = document.createElement("ul");
+  subList.className = "sub-list is-open";
+  talk.subsections.forEach((sub) => {
+    const li = document.createElement("li");
+    const subsectionText = document.createElement("div");
+    subsectionText.appendChild(document.createTextNode("- "));
+    subsectionText.appendChild(buildHeadingFormattedFragment(sub.name));
+    li.appendChild(subsectionText);
+    subList.appendChild(li);
+  });
+
+  const firstSub = talk.subsections[0];
+  if (firstSub) {
+    const videoTitle = document.createElement("li");
+    videoTitle.className = "talk-video-title";
+    videoTitle.appendChild(document.createTextNode("元動画: "));
+    if (isValidHttpUrl(firstSub.videoUrl)) {
+      videoTitle.appendChild(createAnchor(firstSub.videoUrl, firstSub.videoTitle));
+    } else {
+      videoTitle.appendChild(document.createTextNode(firstSub.videoTitle));
+    }
+    subList.appendChild(videoTitle);
+  }
+
+  detail.appendChild(subList);
+  if (showRecommendations) {
+    const recommendations = buildTalkRecommendationsForTalk(talk);
+    detail.appendChild(createRecommendationBlock(recommendations, talk.key));
+  }
 }
 
 function renderTalkCards(talks, options = {}) {
@@ -1946,14 +2218,19 @@ function renderTalkCards(talks, options = {}) {
   }
 
   talks.forEach((talk) => {
+    const isOpen = state.openTalkKeys.has(talk.key);
     const card = document.createElement("article");
     card.className = "card";
     card.dataset.key = talk.key;
     card.dataset.tone = pickAmbientTone([talk.name, ...talk.subsections.map((sub) => sub.name)]);
-    if (state.openTalkKeys.has(talk.key)) card.classList.add("is-open");
+    if (isOpen) card.classList.add("is-open");
 
     const summary = document.createElement("div");
     summary.className = "card-summary";
+    summary.tabIndex = 0;
+    summary.setAttribute("role", "button");
+    summary.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    summary.setAttribute("aria-label", `${talk.name}の詳細を${isOpen ? "閉じる" : "開く"}`);
 
     const main = document.createElement("div");
     main.className = "card-main";
@@ -1983,138 +2260,200 @@ function renderTalkCards(talks, options = {}) {
 
     const detail = document.createElement("div");
     detail.className = "card-detail";
+    if (isOpen) populateTalkDetail(detail, talk, showRecommendations);
 
-    const subList = document.createElement("ul");
-    subList.className = "sub-list is-open";
-    talk.subsections.forEach((sub) => {
-      const li = document.createElement("li");
-      const subsectionText = document.createElement("div");
-      subsectionText.appendChild(document.createTextNode("- "));
-      subsectionText.appendChild(buildHeadingFormattedFragment(sub.name));
-      li.appendChild(subsectionText);
-
-      subList.appendChild(li);
+    const cardActions = document.createElement("div");
+    cardActions.className = "card-mode-actions";
+    const showVideosButton = document.createElement("button");
+    showVideosButton.type = "button";
+    showVideosButton.className = "cross-mode-action";
+    showVideosButton.textContent = "関連動画を見る";
+    showVideosButton.setAttribute("aria-label", `${talk.name}が収録された動画を見る`);
+    showVideosButton.addEventListener("click", () => {
+      void openVideoScreenForTalk(talk.key);
     });
+    cardActions.appendChild(showVideosButton);
 
-    const firstSub = talk.subsections[0];
-    if (firstSub) {
-      const videoTitle = document.createElement("li");
-      videoTitle.className = "talk-video-title";
-      videoTitle.appendChild(document.createTextNode("元動画: "));
-      if (isValidHttpUrl(firstSub.videoUrl)) {
-        videoTitle.appendChild(createAnchor(firstSub.videoUrl, firstSub.videoTitle));
-      } else {
-        videoTitle.appendChild(document.createTextNode(firstSub.videoTitle));
-      }
-      subList.appendChild(videoTitle);
-    }
-
-    detail.appendChild(subList);
-    if (showRecommendations && state.openTalkKeys.has(talk.key)) {
-      const recommendations = buildTalkRecommendationsForTalk(talk);
-      detail.appendChild(createRecommendationBlock(recommendations, "talk"));
-    }
-
-    summary.addEventListener("click", () => {
+    const toggleCard = () => {
       if (state.openTalkKeys.has(talk.key)) {
         state.openTalkKeys.delete(talk.key);
       } else {
         state.openTalkKeys.add(talk.key);
+        populateTalkDetail(detail, talk, showRecommendations);
       }
       card.classList.toggle("is-open");
+      const open = card.classList.contains("is-open");
+      summary.setAttribute("aria-expanded", open ? "true" : "false");
+      summary.setAttribute("aria-label", `${talk.name}の詳細を${open ? "閉じる" : "開く"}`);
+      refs.exploreTheme.textContent = state.openTalkKeys.size > 0 ? "このテーマを深掘り" : "テーマを探す";
+      if (open) void loadFavoriteRankingIfNeeded();
       updateToggleAllButton();
+    };
+    summary.addEventListener("click", (event) => {
+      if (event.target.closest?.("a, button, input, select, textarea")) return;
+      toggleCard();
+    });
+    summary.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggleCard();
     });
 
-    card.append(summary, detail);
+    card.append(summary, cardActions, detail);
     container.appendChild(card);
   });
 
   return container;
 }
 
-function createFavoritePanel(title, key, talks, options = {}) {
-  const { meta = "", showMeta = true } = options;
-  const wrap = document.createElement("article");
-  wrap.className = "favorite-panel";
-
-  const head = document.createElement("button");
-  head.type = "button";
-  head.className = "favorite-panel-head";
-  const isOpen = state.favoritePanelOpenKeys.has(key);
-  head.setAttribute("aria-expanded", isOpen ? "true" : "false");
-
-  const titleEl = document.createElement("span");
-  titleEl.className = "favorite-panel-title";
-  titleEl.textContent = title;
-
-  if (!showMeta) {
-    head.classList.add("favorite-panel-head--no-meta");
-  }
-
-  const metaEl = showMeta ? document.createElement("span") : null;
-  if (metaEl) {
-    metaEl.className = "favorite-panel-meta";
-    metaEl.textContent = meta || `${talks.length}件`;
-  }
-  const marker = document.createElement("span");
-  marker.className = "favorite-panel-marker";
-  marker.textContent = isOpen ? "▼" : "▶";
-  head.append(titleEl);
-  if (metaEl) head.append(metaEl);
-  head.append(marker);
-
-  const body = document.createElement("div");
-  body.className = "favorite-panel-body";
-  if (isOpen) {
-    if (talks.length) {
-      body.appendChild(renderTalkCards(talks, { appendToResults: false, showRecommendations: false, showFavoriteButton: true }));
-    } else {
-      const empty = document.createElement("p");
-      empty.className = "favorite-panel-empty";
-      empty.textContent = "データがありません";
-      body.appendChild(empty);
-    }
-  }
-
-  head.addEventListener("click", () => {
-    if (state.favoritePanelOpenKeys.has(key)) state.favoritePanelOpenKeys.delete(key);
-    else state.favoritePanelOpenKeys.add(key);
-    render();
-  });
-
-  wrap.append(head, body);
-  return wrap;
+function getAggregateItems(data) {
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data?.items) ? data.items : [];
 }
 
-function renderFavoritesTab() {
+function pickDiverseTalks(limit, excludedKeys = new Set()) {
+  const pool = state.talks
+    .filter((talk) => !excludedKeys.has(talk.key))
+    .slice()
+    .sort((a, b) => compareDateDesc(a.date, b.date));
+  if (pool.length <= limit) return pool;
+  const picked = [];
+  const step = Math.max(1, Math.floor(pool.length / limit));
+  for (let index = 0; index < pool.length && picked.length < limit; index += step) {
+    picked.push(pool[index]);
+  }
+  return picked;
+}
+
+function buildExplorationSeedItems(search) {
+  if (!canSkipSearch(search)) {
+    return getFilteredTalks(search).slice(0, 8).map((talk) => ({
+      talk,
+      reason: "検索に一致するテーマ",
+    }));
+  }
+
+  const sources = [
+    {
+      reason: "保存したテーマから再開",
+      talks: Array.from(state.favoritedHeadingIds)
+        .map((headingId) => findTalkByHeadingId(headingId))
+        .filter(Boolean)
+        .slice(0, 4),
+    },
+    {
+      reason: "最近の配信から",
+      talks: getAggregateItems(state.favoritesRecentUpload)
+        .map((item) => findTalkByHeadingId(getHeadingIdFromObject(item)))
+        .filter(Boolean)
+        .slice(0, 4),
+    },
+    {
+      reason: "よく保存されるテーマ",
+      talks: getAggregateItems(state.favoritesHall)
+        .map((item) => findTalkByHeadingId(getHeadingIdFromObject(item)))
+        .filter(Boolean)
+        .slice(0, 4),
+    },
+    {
+      reason: "みんなが気になったテーマ",
+      talks: getAggregateItems(state.favoritesCurrentRanking)
+        .map((item) => findTalkByHeadingId(getHeadingIdFromObject(item)))
+        .filter(Boolean)
+        .slice(0, 4),
+    },
+  ];
+
+  const seeds = [];
+  const seenKeys = new Set();
+  for (let sourceIndex = 0; seeds.length < 8; sourceIndex += 1) {
+    let found = false;
+    for (const source of sources) {
+      const talk = source.talks[sourceIndex];
+      if (!talk) continue;
+      found = true;
+      if (seenKeys.has(talk.key)) continue;
+      seenKeys.add(talk.key);
+      seeds.push({ talk, reason: source.reason });
+      if (seeds.length >= 8) break;
+    }
+    if (!found) break;
+  }
+
+  pickDiverseTalks(8 - seeds.length, seenKeys).forEach((talk) => {
+    seenKeys.add(talk.key);
+    seeds.push({ talk, reason: "別の切り口を見つける" });
+  });
+  return seeds;
+}
+
+function renderExplorationHub(search) {
   refs.results.innerHTML = "";
-  const favoriteTalks = Array.from(state.favoritedHeadingIds)
-    .map((headingId) => findTalkByHeadingId(headingId))
-    .filter(Boolean);
+  const hub = document.createElement("section");
+  hub.className = "exploration-hub";
 
-  const recentItems = Array.isArray(state.favoritesRecentUpload?.items) ? state.favoritesRecentUpload.items : [];
-  const hallItems = Array.isArray(state.favoritesHall?.items) ? state.favoritesHall.items : [];
-  const recentTalks = recentItems.map((item) => findTalkByHeadingId(getHeadingIdFromObject(item))).filter(Boolean).slice(0, RECOMMEND_LIMIT);
-  const hallTalks = hallItems.map((item) => findTalkByHeadingId(getHeadingIdFromObject(item))).filter(Boolean).slice(0, RECOMMEND_LIMIT);
+  const header = document.createElement("header");
+  header.className = "exploration-hub-header";
+  const title = document.createElement("h2");
+  title.textContent = canSkipSearch(search) ? "気になるテーマを1つ選ぶ" : "検索結果からテーマを選ぶ";
+  const description = document.createElement("p");
+  description.textContent = "選んだテーマから、関連するトークを次々にたどれます。";
+  header.append(title, description);
+  hub.appendChild(header);
 
-  const favoriteMeta = favoriteTalks.length ? `${favoriteTalks.length}件` : "0件";
-  refs.results.appendChild(createFavoritePanel("お気に入りリスト", "mine", favoriteTalks, { meta: favoriteMeta, showMeta: true }));
+  const seeds = buildExplorationSeedItems(search);
+  if (!seeds.length) {
+    const empty = document.createElement("p");
+    empty.className = "exploration-hub-empty";
+    empty.textContent = canSkipSearch(search)
+      ? "探索できるテーマを準備中です。"
+      : "条件に一致するテーマはありません。";
+    hub.appendChild(empty);
+  } else {
+    const grid = document.createElement("div");
+    grid.className = "exploration-seed-grid";
+    seeds.forEach(({ talk, reason }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "exploration-seed";
+      button.setAttribute("aria-label", `${talk.name}から深掘りを始める`);
 
-  refs.results.appendChild(createFavoritePanel("直近の動画のおすすめ", "recent-upload", recentTalks, { showMeta: false }));
+      const reasonEl = document.createElement("span");
+      reasonEl.className = "exploration-seed-reason";
+      reasonEl.textContent = reason;
+      const titleEl = document.createElement("span");
+      titleEl.className = "exploration-seed-title";
+      titleEl.appendChild(buildHeadingFormattedFragment(talk.name));
+      const meta = document.createElement("span");
+      meta.className = "exploration-seed-meta";
+      meta.textContent = formatTalkRecommendationSubtitle({
+        talk,
+        sourceTitle: getTalkVideoTitle(talk),
+        date: parseDateValue(talk.date),
+      });
+      button.append(reasonEl, titleEl, meta);
+      button.addEventListener("click", () => openTalkForExploration(talk.key));
+      grid.appendChild(button);
+    });
+    hub.appendChild(grid);
+  }
 
-  refs.results.appendChild(createFavoritePanel("殿堂入り", "hall", hallTalks, { showMeta: false }));
-
+  refs.results.appendChild(hub);
+  return seeds.length;
 }
 
 function render() {
   const search = parseSearch(state.search);
   const isVideo = state.viewMode === "video";
   const isTalkLike = state.viewMode === "talk" || state.viewMode === "favorites";
+  updateModeHeader();
+  updateTabs();
+  renderModeContext();
+  renderSearchOverview(search);
   if (isTalkLike && state.talksStatus === "loading") {
     const loadingMessage = getModeMessage("talk", "loading");
     refs.notice.textContent = loadingMessage;
     refs.results.innerHTML = `<p>${loadingMessage}</p>`;
-    updateTabs();
     updateServerStatus("ok", 0);
     updateToggleAllButton();
     return;
@@ -2122,34 +2461,39 @@ function render() {
   if (isTalkLike && state.talksStatus === "error") {
     refs.notice.textContent = "";
     refs.results.innerHTML = `<p>${getModeMessage("talk", "loadFailed")}</p>`;
-    updateTabs();
     updateServerStatus("ok", 0);
     updateToggleAllButton();
     return;
   }
   const filtered = isVideo ? getFilteredVideos(search) : getFilteredTalks(search);
 
-  refs.notice.textContent = state.talksFallbackActive && isTalkLike
-    ? getModeMessage("talk", "fallback")
-    : "";
+  const focusedTalkKey = state.focusedTalkKeys ? Array.from(state.focusedTalkKeys)[0] : "";
+  const focusedTalk = findTalkByKey(focusedTalkKey);
+  refs.notice.textContent = focusedTalk && !state.navigationContext
+    ? `「${focusedTalk.name}」を深掘り中`
+    : (state.talksFallbackActive && isTalkLike ? getModeMessage("talk", "fallback") : "");
 
-  updateTabs();
-  updateServerStatus("ok", state.viewMode === "favorites" ? state.favoritedHeadingIds.size : filtered.length);
   updateToggleAllButton();
+  refs.exploreTheme.textContent = state.viewMode === "talk" && state.openTalkKeys.size > 0
+    ? "このテーマを深掘り"
+    : "テーマを探す";
   if (state.viewMode === "talk" && state.openTalkKeys.size > 0) {
     void loadFavoriteRankingIfNeeded();
   }
   if (isVideo) {
     renderCards(filtered);
+    updateServerStatus("ok", filtered.length);
   } else if (state.viewMode === "talk") {
     renderTalkCards(filtered);
+    const trail = createExplorationTrail();
+    if (trail) refs.results.prepend(trail);
+    updateServerStatus("ok", filtered.length);
   } else {
-    renderFavoritesTab();
+    const seedCount = renderExplorationHub(search);
+    updateServerStatus("ok", seedCount);
   }
 
-  window.requestAnimationFrame(() => {
-    updateAmbientTransitionByCards();
-  });
+  scheduleViewportUpdate();
 }
 
 async function fetchInitialVideos() {
@@ -2304,27 +2648,48 @@ async function loadTalksIfNeeded() {
   }
 }
 
-async function pickRandomSection() {
+function findExplorationContextTalk() {
+  if (state.viewMode === "talk") {
+    const openKeys = Array.from(state.openTalkKeys);
+    for (let index = openKeys.length - 1; index >= 0; index -= 1) {
+      const talk = findTalkByKey(openKeys[index]);
+      if (talk) return talk;
+    }
+    if (state.search) return getFilteredTalks()[0] || null;
+  }
+
+  if (state.viewMode === "video") {
+    const openVideoKeys = Array.from(state.openVideoKeys);
+    const video = state.videos.find((item) => item.key === openVideoKeys[openVideoKeys.length - 1]);
+    if (video) {
+      const matched = findTalksForVideo(video, state.talks)[0];
+      if (matched) return matched;
+    }
+  }
+  return null;
+}
+
+async function startThemeExploration() {
   await loadTalksIfNeeded();
   if (!state.talks.length) {
-    state.randomSection = "候補なし";
     render();
     return;
   }
 
-  const pool = [...state.talks];
-  for (let i = pool.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+  const contextTalk = findExplorationContextTalk();
+  if (contextTalk) {
+    openTalkForExploration(contextTalk.key);
+    return;
   }
 
-  const picked = pool.slice(0, 3);
-  state.viewMode = "talk";
-  state.search = "";
-  refs.search.value = "";
-  state.randomTalkKeys = new Set(picked.map((item) => item.key));
-  state.randomSection = `トーク見出しを${picked.length}件表示中`;
+  state.viewMode = "favorites";
+  state.navigationContext = null;
+  state.focusedVideoKeys = null;
+  state.focusedTalkKeys = null;
+  state.openTalkKeys = new Set();
   render();
+  void retryUnsyncedFavoriteVotes();
+  void loadFavoritesDataIfNeeded().then(() => render());
 }
 
 function toggleAllByMode() {
@@ -2350,19 +2715,24 @@ function toggleAllByMode() {
 }
 
 async function switchViewMode(mode) {
+  state.viewMode = mode;
+  state.navigationContext = null;
+  state.focusedVideoKeys = null;
+  state.focusedTalkKeys = null;
+  state.openVideoKeys = new Set();
+  state.openTalkKeys = new Set();
+  state.isVideoExpandLock = false;
+  state.videoAutoCollapseAnchor = null;
+  render();
   if (mode === "talk" || mode === "favorites") {
     await loadTalksIfNeeded();
-    if (mode === "favorites") {
-      await retryUnsyncedFavoriteVotes();
-      await loadFavoritesDataIfNeeded();
-    }
-    state.isVideoExpandLock = false;
-    state.videoAutoCollapseAnchor = null;
+    render();
   }
-  state.viewMode = mode;
-  state.randomTalkKeys = null;
-  state.randomSection = "";
-  render();
+  if (mode === "talk") void loadFavoriteRankingIfNeeded();
+  if (mode === "favorites") {
+    void retryUnsyncedFavoriteVotes();
+    void loadFavoritesDataIfNeeded().then(() => render());
+  }
 }
 
 function getHeaderBottomOffset() {
@@ -2421,36 +2791,22 @@ function bindAmbientReactions() {
   });
 }
 
-function bindMobileScrollLock() {
-  const viewport = document.querySelector('meta[name="viewport"]');
-  if (viewport) {
-    viewport.setAttribute("content", "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover");
-  }
-
-  const preventIfZoom = (event) => {
-    if (event.ctrlKey) event.preventDefault();
-  };
-  const preventPinch = (event) => {
-    if (event.touches && event.touches.length > 1) event.preventDefault();
-  };
-
-  document.addEventListener("touchmove", preventPinch, { passive: false });
-  window.addEventListener("wheel", preventIfZoom, { passive: false });
-  window.addEventListener("gesturestart", (event) => event.preventDefault(), { passive: false });
-}
-
 async function init() {
   refreshAmbientViewport();
-  initAmbientScene();
   const SEARCH_INPUT_DELAY_MS = 300;
   let searchInputTimer = null;
   let isComposing = false;
 
   const applySearchInput = (value) => {
     state.search = text(value);
-    state.randomTalkKeys = null;
-    if (state.search && state.searchIndexStatus === "idle") {
-      void loadSearchIndexIfNeeded().then(() => render());
+    state.navigationContext = null;
+    state.focusedVideoKeys = null;
+    state.focusedTalkKeys = null;
+    if (parseSearch(state.search).mode === "normal") {
+      void Promise.all([
+        loadSearchIndexIfNeeded(),
+        loadTalksIfNeeded(),
+      ]).then(() => render());
     }
     render();
   };
@@ -2462,12 +2818,6 @@ async function init() {
       applySearchInput(value);
     }, SEARCH_INPUT_DELAY_MS);
   };
-
-  refs.search.addEventListener("focus", () => {
-    if (state.searchIndexStatus === "idle") {
-      void loadSearchIndexIfNeeded().then(() => render());
-    }
-  }, { once: false });
 
   refs.search.addEventListener("compositionstart", () => {
     isComposing = true;
@@ -2483,6 +2833,24 @@ async function init() {
     scheduleSearchInput(event.target.value);
   });
 
+  refs.search.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !refs.search.value) return;
+    event.preventDefault();
+    if (searchInputTimer) {
+      clearTimeout(searchInputTimer);
+      searchInputTimer = null;
+    }
+    refs.search.value = "";
+    applySearchInput("");
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.target.closest?.("input, textarea, select, [contenteditable='true']")) return;
+    event.preventDefault();
+    refs.search.focus();
+  });
+
   refs.clearSearch.addEventListener("click", () => {
     if (searchInputTimer) {
       clearTimeout(searchInputTimer);
@@ -2490,7 +2858,9 @@ async function init() {
     }
     state.search = "";
     refs.search.value = "";
-    state.randomTalkKeys = null;
+    state.navigationContext = null;
+    state.focusedVideoKeys = null;
+    state.focusedTalkKeys = null;
     render();
     refs.search.focus();
   });
@@ -2516,8 +2886,8 @@ async function init() {
     })();
   });
 
-  refs.randomSection.addEventListener("click", () => {
-    void pickRandomSection();
+  refs.exploreTheme.addEventListener("click", () => {
+    void startThemeExploration();
   });
 
   refs.tabVideo.addEventListener("click", () => {
@@ -2535,36 +2905,33 @@ async function init() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
-  window.addEventListener("scroll", () => {
-    updateScrollGradient();
-    updateAmbientTransitionByCards();
-    handleVideoAutoCollapseByCardPass();
-    const before = state.isNewVideoHighlightVisible;
-    updateNewVideoHighlightVisibility();
-    if (before !== state.isNewVideoHighlightVisible && state.viewMode === "video") {
-      render();
-    }
-  }, { passive: true });
+  window.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
 
   window.addEventListener("resize", () => {
     refreshAmbientViewport();
-    updateAmbientTransitionByCards();
+    scheduleViewportUpdate();
   }, { passive: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopAmbientAnimation();
+    else startAmbientAnimation();
+  });
   updateScrollGradient();
   updateAmbientTransitionByCards();
   updateNewVideoHighlightVisibility();
   bindAmbientReactions();
-  bindMobileScrollLock();
   restoreFavoritesFromStorage();
-  await retryUnsyncedFavoriteVotes();
 
   try {
     state.videos = await fetchInitialVideos();
     state.videos = attachDisplayTags(state.videos);
     state.newVideoHighlightKeys = pickNewVideoHighlightKeys(state.videos);
     render();
+    scheduleAmbientSceneInit();
+    void retryUnsyncedFavoriteVotes();
   } catch (error) {
-    refs.error.textContent = "";
+    refs.error.textContent = error instanceof Error
+      ? error.message
+      : "動画データの読み込みに失敗しました。";
     console.error("[latest] initial video load failed", error);
     updateServerStatus("error");
   }

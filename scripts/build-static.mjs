@@ -3,6 +3,7 @@ import path from "node:path";
 
 const distDir = "dist";
 const files = ["index.html", "app.js", "styles.css"];
+const directories = ["src", "assets"];
 
 const dataUrl = (process.env.TALK_INDEX_DATA_URL || "").trim();
 
@@ -11,6 +12,10 @@ fs.mkdirSync(path.join(distDir, "index"), { recursive: true });
 
 for (const file of files) {
   fs.copyFileSync(file, path.join(distDir, file));
+}
+
+for (const directory of directories) {
+  fs.cpSync(directory, path.join(distDir, directory), { recursive: true });
 }
 
 if (dataUrl) {
@@ -31,5 +36,5 @@ if (dataUrl) {
 
 console.log("✅ static build completed");
 console.log(`- output directory: ${distDir}`);
-console.log(`- bundled files: ${files.join(", ")}`);
+console.log(`- bundled files: ${[...files, ...directories.map((directory) => `${directory}/`)].join(", ")}`);
 console.log(`- TALK_INDEX_DATA_URL override: ${dataUrl ? "applied" : "not applied"}`);

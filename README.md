@@ -8,14 +8,14 @@ Talk-index は、YouTube の配信情報を **収集 → スプレッドシー�
 
 1. `crawler/jobs/daily_crawl.py` が YouTube から動画情報を取得し、Google スプレッドシートへ追記
 2. `exporter/sheet_to_json_and_upload_r2.py` がシートを JSON 化して R2 へアップロード
-3. `index.html` + `src/main.js` が R2 の JSON を読み、ブラウザで一覧/検索表示
+3. `index.html` + `app.js` が R2 の JSON を読み、ブラウザで一覧/検索表示
 
 ## 現在の構成（分割後）
 
 ```text
 .
 ├─ src/                              # フロント本体（分割済み）
-│  ├─ main.js                        # 開発時のフロント入口
+│  ├─ main.js                        # 互換確認用の旧入口
 │  ├─ core/state.js                  # 画面状態
 │  ├─ data/                          # JSON取得・整形
 │  ├─ features/                      # favorites / search
@@ -31,7 +31,7 @@ Talk-index は、YouTube の配信情報を **収集 → スプレッドシー�
 ├─ scripts/                          # build契約
 ├─ tests/
 ├─ index.html                        # フロントHTML入口
-├─ app.js                            # 旧集約実装（build互換のため保持）
+├─ app.js                            # フロントの実行入口
 ├─ styles.css
 ├─ package.json
 └─ requirements.txt
@@ -39,7 +39,7 @@ Talk-index は、YouTube の配信情報を **収集 → スプレッドシー�
 
 ## 主要ファイル（開発時の入口）
 
-- フロント開発の入口: `index.html` + `src/main.js`
+- フロント開発の入口: `index.html` + `app.js`
 - フロント機能追加の主編集先:
   - 描画: `src/ui/render-results.js`, `src/ui/render-status.js`, `src/ui/render-messages.js`
   - 機能: `src/features/favorites.js`, `src/features/search.js`
@@ -191,9 +191,19 @@ npm run ci:build
 
 JSON取得の共通基盤は `src/data/fetch-json.js`（`fetchJsonFromCandidates` など）を使い、favorites 側で独自の汎用JSON fetch helperは持たない方針です。
 
-### フロントUI（最小構成）
+### ブラウザUI
 
-- タブ: `動画単位 / トーク単位 / お気に入り`
+- タブ: `動画単位 / トーク単位 / テーマ探索`
+- 動画単位:
+  - 動画カードの `収録トークを見る` から、その動画に含まれるトーク一覧へ移動
+  - 展開した大見出しの `テーマ表示` から、該当トークへ直接移動
+- トーク単位:
+  - トークカードの `関連動画を見る` から、収録元の動画一覧へ移動
+  - 相互移動中は文脈バーを表示し、移動元または通常一覧へ戻れる
+- 横断検索:
+  - 1つの検索欄で動画タイトル、大見出し、小見出しを検索
+  - 検索中は動画とトークの一致件数を同時に表示し、入力を維持したまま表示を切り替える
+  - `/` キーで検索欄へフォーカス、`Escape` で検索語をクリア
 - ☆/★トグル: 大見出し行の右端に配置（即時反映）
 - localStorage 保存:
   - `talk_index:favorites:client_id`
@@ -206,10 +216,11 @@ JSON取得の共通基盤は `src/data/fetch-json.js`（`fetchJsonFromCandidates
   - 通信失敗時は `unsyncedFavoriteHeadingIds` に残し、将来再送する
   - 解除時は vote 取消APIは呼ばない
   - 既にサーバ成功済みの heading は再送しない
-- お気に入りタブの3カード:
-  - お気に入りリスト（localStorage基準）
-  - 直近の動画のおすすめ（`/favorites/recent_upload_recommendations.json`、上位5件）
-  - 殿堂入り（`/favorites/hall_of_fame.json`、上位5件）
+- テーマ探索:
+  - お気に入り、直近動画、全期間ランキングを「探索の入口」を選ぶシグナルとして統合
+  - 集計種別ごとの独立パネルは表示せず、テーマを選ぶと関連テーマを最大3件表示
+  - 関連テーマを選ぶたびにトーク表示を保ったまま次のテーマへ移動
+  - 直近6件の探索履歴から前のテーマへ戻れる
   - `recent_recommendations` は HTML に表示しません（スプレッドシート用）
 
 
@@ -303,8 +314,9 @@ npm ci
 npm run ci:build
 ```
 
-- 生成物: `dist/`（`dist/index.html`, `dist/app.js`, `dist/styles.css`）
+- 生成物: `dist/`（`dist/index.html`, `dist/app.js`, `dist/styles.css`, `dist/src/**`, `dist/assets/**`）
 - `TALK_INDEX_DATA_URL` を環境変数で渡すと、build 時に `dist/index.html` のデータ URL を差し替えます。
+- `preview:check` は HTML から辿れるローカル JavaScript モジュールが `dist/` にすべて存在することも検証します。
 
 ## 運用手順（最小）
 
@@ -349,11 +361,11 @@ npm run ci:build
   `TIMESTAMP_COMMENT_THREAD_LIMIT`, `TIMESTAMP_TOP_COMMENT_PAGE_SIZE`, `TIMESTAMP_TOP_COMMENT_MAX_PAGES`, `TIMESTAMP_TOP_COMMENT_MAX_ITEMS`, `TIMESTAMP_REPLY_PAGE_SIZE`, `TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD`
 
 
-## 未使用ファイル整理結果（2026-04-22 時点）
+## フロント実行入口の整理（2026-07-24）
 
-- `app.js` は現状 `index.html` の実行入口ではありません（入口は `src/main.js`）。
-- ただし build 契約（`scripts/*.mjs`）が `app.js` の存在を前提にしているため、**まだ削除していません**。
-- 直近は「削除候補の明確化」まで完了、実削除は build 契約更新と同時に行う方針です。
+- `index.html` から `app.js` を直接読み込み、起動時に未使用の補助モジュールを取得しない構成にしました。
+- `app.js` が利用する `src/data/*`, `src/features/*`, `src/ui/*` は build 時に `dist/src/` へ同梱します。
+- `src/main.js` は互換確認用に残していますが、ブラウザの実行入口ではありません。
 
 ## Changelog（削除済みファイル/機能）
 
