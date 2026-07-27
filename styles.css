@@ -131,38 +131,6 @@ body[data-ambient-tone="calm"] {
   padding: 44px 0 0;
 }
 
-.mode-header {
-  margin-bottom: 10px;
-  padding: 18px 20px;
-  border: 1px solid rgba(191, 219, 254, 0.9);
-  border-radius: 16px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(239, 246, 255, 0.9));
-  box-shadow: 0 12px 32px rgba(30, 64, 175, 0.08);
-  backdrop-filter: blur(12px);
-}
-
-.mode-eyebrow {
-  margin: 0 0 4px;
-  color: #0284c7;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-}
-
-.mode-header h1 {
-  margin: 0;
-  color: #0f172a;
-  font-size: clamp(1.28rem, 2.5vw, 1.7rem);
-  line-height: 1.25;
-}
-
-.mode-header p:last-child {
-  margin: 6px 0 0;
-  color: #475569;
-  font-size: 0.88rem;
-}
-
 .mode-context {
   display: flex;
   align-items: center;
@@ -943,10 +911,6 @@ input {
 @media (max-width: 699px) {
   .talk-area {
     padding-top: 48px;
-  }
-
-  .mode-header {
-    padding: 14px;
   }
 
   .mode-context {
