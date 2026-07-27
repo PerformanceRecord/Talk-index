@@ -25,7 +25,10 @@ class FavoritesFrontendContractTests(unittest.TestCase):
     def test_video_and_talk_views_have_cross_navigation(self):
         html = Path('index.html').read_text(encoding='utf-8')
         app_js = Path('app.js').read_text(encoding='utf-8')
-        self.assertIn('動画から探す', html)
+        self.assertNotIn('class="mode-header"', html)
+        self.assertNotIn('id="mode-title"', html)
+        self.assertNotIn('function updateModeHeader', app_js)
+        self.assertIn('aria-label="検索結果"', html)
         self.assertIn('function openTalkScreenForVideo', app_js)
         self.assertIn('function openVideoScreenForTalk', app_js)
         self.assertIn('収録トークを見る', app_js)

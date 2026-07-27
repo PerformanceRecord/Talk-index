@@ -117,9 +117,6 @@ const TALK_RECOMMENDATION_STOP_WORDS = new Set([
 
 const refs = {
   search: document.getElementById("search"),
-  modeEyebrow: document.getElementById("mode-eyebrow"),
-  modeTitle: document.getElementById("mode-title"),
-  modeDescription: document.getElementById("mode-description"),
   modeContext: document.getElementById("mode-context"),
   searchOverview: document.getElementById("search-overview"),
   notice: document.getElementById("notice"),
@@ -1676,29 +1673,6 @@ function updateTabs() {
   refs.tabFavorites.setAttribute("aria-selected", isFavorites ? "true" : "false");
 }
 
-function updateModeHeader() {
-  const presentation = state.viewMode === "video"
-    ? {
-      eyebrow: "VIDEO INDEX",
-      title: "動画から探す",
-      description: "配信ごとに、収録されているトークをまとめて確認できます。",
-    }
-    : state.viewMode === "talk"
-      ? {
-        eyebrow: "TALK INDEX",
-        title: "トークテーマから探す",
-        description: "気になる話題から、収録動画や次の関連テーマへ移動できます。",
-      }
-      : {
-        eyebrow: "DISCOVER",
-        title: "テーマを深掘りする",
-        description: "入口となるテーマを選び、関連するトークを次々にたどれます。",
-      };
-  refs.modeEyebrow.textContent = presentation.eyebrow;
-  refs.modeTitle.textContent = presentation.title;
-  refs.modeDescription.textContent = presentation.description;
-}
-
 function renderModeContext() {
   refs.modeContext.innerHTML = "";
   const context = state.navigationContext;
@@ -2446,7 +2420,6 @@ function render() {
   const search = parseSearch(state.search);
   const isVideo = state.viewMode === "video";
   const isTalkLike = state.viewMode === "talk" || state.viewMode === "favorites";
-  updateModeHeader();
   updateTabs();
   renderModeContext();
   renderSearchOverview(search);
