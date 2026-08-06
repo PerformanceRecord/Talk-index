@@ -19,6 +19,19 @@ if (!html.includes("window.TALK_INDEX_DATA_URL")) {
   fail("dist/index.html does not define window.TALK_INDEX_DATA_URL");
 }
 
+const viewportMeta = html.match(/<meta\b[^>]*\bname=["']viewport["'][^>]*\bcontent=["']([^"']+)["'][^>]*>/i)?.[1] || "";
+if (!viewportMeta.includes("width=device-width") || !viewportMeta.includes("initial-scale=1.0")) {
+  fail("dist/index.html must keep the mobile viewport tied to the device width");
+}
+
+const css = fs.readFileSync("dist/styles.css", "utf8");
+if (!/-webkit-text-size-adjust:\s*100%/.test(css) || !/text-size-adjust:\s*100%/.test(css)) {
+  fail("dist/styles.css must keep text sizing stable across orientation changes");
+}
+if (!/input\s*\{[^}]*font-size:\s*16px/s.test(css)) {
+  fail("dist/styles.css must prevent mobile browsers from zooming focused inputs");
+}
+
 const moduleEntryMatch = html.match(/<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["'][^>]*>/i);
 if (!moduleEntryMatch) {
   fail("dist/index.html does not include a module entry");
