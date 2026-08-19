@@ -1963,7 +1963,7 @@ function renderCards(videos) {
     summary.tabIndex = state.isVideoExpandLock ? -1 : 0;
     summary.setAttribute("role", "button");
     summary.setAttribute("aria-expanded", openKeys.has(video.key) ? "true" : "false");
-    summary.setAttribute("aria-label", `${video.title}の詳細を${openKeys.has(video.key) ? "閉じる" : "開く"}`);
+    summary.setAttribute("aria-label", `${video.title}の収録トークを${openKeys.has(video.key) ? "閉じる" : "開く"}`);
 
     const main = document.createElement("div");
     main.className = "card-main";
@@ -1978,7 +1978,7 @@ function renderCards(videos) {
 
     const metaRow = document.createElement("div");
     metaRow.className = "card-meta-row";
-    metaRow.textContent = `${video.sectionCount || 0}件`;
+    metaRow.textContent = `収録トーク ${video.sectionCount || 0}件`;
 
     main.append(titleRow, metaRow);
 
@@ -2000,18 +2000,6 @@ function renderCards(videos) {
 
     side.append(thumb, dateCorner);
     summary.append(main, side);
-
-    const cardActions = document.createElement("div");
-    cardActions.className = "card-mode-actions";
-    const showTalksButton = document.createElement("button");
-    showTalksButton.type = "button";
-    showTalksButton.className = "cross-mode-action";
-    showTalksButton.textContent = "収録トークを見る";
-    showTalksButton.setAttribute("aria-label", `${video.title}に収録されたトークを見る`);
-    showTalksButton.addEventListener("click", () => {
-      void openTalkScreenForVideo(video.key);
-    });
-    cardActions.appendChild(showTalksButton);
 
     const detail = document.createElement("div");
     detail.className = "card-detail";
@@ -2145,7 +2133,7 @@ function renderCards(videos) {
       void toggleCard();
     });
 
-    card.append(summary, cardActions, detail);
+    card.append(summary, detail);
     refs.results.appendChild(card);
   });
 }
