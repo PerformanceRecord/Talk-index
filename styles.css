@@ -4,6 +4,7 @@
   line-height: 1.4;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  --control-menu-reserved-space: 156px;
 }
 
 * {
@@ -95,7 +96,7 @@ body[data-ambient-tone="calm"] {
   margin: 0 auto;
   min-height: 100vh;
   min-height: 100dvh;
-  padding: 12px 12px 104px;
+  padding: 12px 12px calc(var(--control-menu-reserved-space) + env(safe-area-inset-bottom));
 }
 
 .ambient-header {
