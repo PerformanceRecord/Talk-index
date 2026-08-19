@@ -9,6 +9,10 @@ import {
   findTalksForVideo,
   findVideosForTalk,
 } from "./src/features/cross-navigation.js";
+import {
+  captureVideoListState,
+  restoreVideoListState,
+} from "./src/features/list-navigation-state.js";
 import { getModeMessage } from "./src/ui/render-messages.js";
 
 const configuredDataUrl = text(window.TALK_INDEX_DATA_URL);
@@ -1531,6 +1535,7 @@ function scrollToResultsStart() {
 async function openTalkScreenForVideo(videoKey, talkName = "") {
   const video = findVideoByKey(videoKey);
   if (!video) return;
+  const sourceListState = captureVideoListState(state, window.scrollY);
   await loadTalksIfNeeded();
 
   const relatedTalks = findTalksForVideo(video, state.talks);
@@ -1558,6 +1563,7 @@ async function openTalkScreenForVideo(videoKey, talkName = "") {
     sourceKey: video.key,
     sourceLabel: video.title,
     targetCount: shownTalks.length,
+    sourceListState,
   };
   render();
   scrollToResultsStart();
@@ -1606,9 +1612,12 @@ function returnToNavigationSource() {
     if (!video) return;
     state.viewMode = "video";
     state.focusedTalkKeys = null;
-    state.focusedVideoKeys = new Set([video.key]);
     state.openTalkKeys = new Set();
-    state.openVideoKeys = new Set([video.key]);
+    const restoredScrollY = restoreVideoListState(state, context.sourceListState);
+    refs.search.value = state.search;
+    render();
+    requestAnimationFrame(() => window.scrollTo({ top: restoredScrollY, behavior: "auto" }));
+    return;
   } else {
     const talk = findTalkByKey(context.sourceKey);
     if (!talk) return;
