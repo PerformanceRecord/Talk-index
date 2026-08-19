@@ -18,8 +18,5 @@ export function restoreVideoListState(state, snapshot) {
   state.focusedVideoKeys = cloneOptionalSet(snapshot.focusedVideoKeys);
   state.openVideoKeys = cloneOptionalSet(snapshot.openVideoKeys) || new Set();
   state.isVideoExpandLock = snapshot.isVideoExpandLock;
-  // Restoring the previous auto-collapse anchor would make the programmatic
-  // scroll trigger a render that changes the list height and causes a jump.
-  state.videoAutoCollapseAnchor = null;
   return snapshot.scrollY;
 }

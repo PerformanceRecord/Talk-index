@@ -58,7 +58,6 @@ const state = {
   openTalkKeys: new Set(),
   focusedVideoKeys: null,
   isVideoExpandLock: false,
-  videoAutoCollapseAnchor: null,
   viewMode: "video",
   focusedTalkKeys: null,
   navigationContext: null,
@@ -87,7 +86,6 @@ const state = {
 const RECOMMEND_LIMIT = 5;
 const NEW_VIDEO_HIGHLIGHT_COUNT = 1;
 const NEW_VIDEO_HIGHLIGHT_SCROLL_SCREENS = 2;
-const VIDEO_AUTO_COLLAPSE_PASSED_COUNT = 2;
 const SONG_DB_URL = "https://performancerecord.github.io/uni-uta-db/";
 const GENERIC_TAG_RATIO_THRESHOLD = 1;
 const HIDDEN_DISPLAY_TAGS = new Set(["Vtuber", "雲丹ゐくら", "個人Vtuber", "バーチャルYOUTUBER"]);
@@ -1144,7 +1142,6 @@ function scheduleViewportUpdate() {
     viewportUpdateFrameId = 0;
     updateScrollGradient();
     updateAmbientTransitionByCards();
-    handleVideoAutoCollapseByCardPass();
     const before = state.isNewVideoHighlightVisible;
     updateNewVideoHighlightVisibility();
     if (before !== state.isNewVideoHighlightVisible && state.viewMode === "video") {
@@ -1587,7 +1584,6 @@ async function openVideoScreenForTalk(talkKey) {
   state.openTalkKeys = new Set();
   state.openVideoKeys = new Set([relatedVideos[0].key]);
   state.isVideoExpandLock = false;
-  state.videoAutoCollapseAnchor = null;
   state.navigationContext = {
     sourceMode: "talk",
     sourceKey: talk.key,
@@ -1866,7 +1862,6 @@ function openTalkForExploration(talkKey, sourceKey = "") {
   state.openTalkKeys = new Set([talk.key]);
   state.openVideoKeys = new Set();
   state.isVideoExpandLock = false;
-  state.videoAutoCollapseAnchor = null;
   state.viewMode = "talk";
   state.search = "";
   refs.search.value = "";
@@ -1949,7 +1944,7 @@ function renderCards(videos) {
   const openKeys = getDisplayedVideoOpenKeys(videos);
   const lockClass = state.isVideoExpandLock ? " is-expand-locked" : "";
 
-  videos.forEach((video, index) => {
+  videos.forEach((video) => {
     const card = document.createElement("article");
     card.className = `card${lockClass}`;
     card.dataset.key = video.key;
@@ -2110,12 +2105,8 @@ function renderCards(videos) {
       if (state.isVideoExpandLock) return;
       if (state.openVideoKeys.has(video.key)) {
         state.openVideoKeys.delete(video.key);
-        if (state.videoAutoCollapseAnchor?.key === video.key) {
-          state.videoAutoCollapseAnchor = null;
-        }
       } else {
         state.openVideoKeys.add(video.key);
-        state.videoAutoCollapseAnchor = { key: video.key, index };
         if (!Array.isArray(video.sections)) {
           render();
           await ensureVideoDetailsLoaded(video);
@@ -2669,12 +2660,10 @@ function toggleAllByMode() {
     if (allOpen) {
       state.openVideoKeys = new Set();
       state.isVideoExpandLock = false;
-      state.videoAutoCollapseAnchor = null;
       return;
     }
     state.openVideoKeys = new Set(videos.map((video) => video.key));
     state.isVideoExpandLock = true;
-    state.videoAutoCollapseAnchor = null;
     return;
   }
   if (state.viewMode === "favorites") return;
@@ -2692,7 +2681,6 @@ async function switchViewMode(mode) {
   state.openVideoKeys = new Set();
   state.openTalkKeys = new Set();
   state.isVideoExpandLock = false;
-  state.videoAutoCollapseAnchor = null;
   render();
   if (mode === "talk" || mode === "favorites") {
     await loadTalksIfNeeded();
@@ -2703,46 +2691,6 @@ async function switchViewMode(mode) {
     void retryUnsyncedFavoriteVotes();
     void loadFavoritesDataIfNeeded().then(() => render());
   }
-}
-
-function getHeaderBottomOffset() {
-  const fixedHeader = document.querySelector(".view-tabs-row");
-  if (!fixedHeader) return 0;
-  const rect = fixedHeader.getBoundingClientRect();
-  return Math.max(rect.bottom, 0);
-}
-
-function handleVideoAutoCollapseByCardPass() {
-  if (state.viewMode !== "video") return;
-  if (state.isVideoExpandLock) return;
-  if (!state.videoAutoCollapseAnchor?.key) return;
-
-  const cards = Array.from(refs.results?.querySelectorAll?.(".card") || []);
-  if (!cards.length) return;
-
-  const anchor = state.videoAutoCollapseAnchor;
-  const anchorIndexByKey = cards.findIndex((card) => card.dataset.key === anchor.key);
-  const anchorIndex = anchorIndexByKey >= 0 ? anchorIndexByKey : anchor.index;
-  const anchorCard = cards[anchorIndex];
-  if (!anchorCard || anchorIndex < 0) {
-    state.videoAutoCollapseAnchor = null;
-    return;
-  }
-
-  const headerBottom = getHeaderBottomOffset();
-  const passedCount = cards.slice(anchorIndex + 1).reduce((count, card) => {
-    const summary = card.querySelector(".card-summary");
-    if (!summary) return count;
-    return summary.getBoundingClientRect().top <= headerBottom ? count + 1 : count;
-  }, 0);
-  const anchorBottom = anchorCard.getBoundingClientRect().bottom;
-  const hasPassedEnoughCards = passedCount >= VIDEO_AUTO_COLLAPSE_PASSED_COUNT;
-  const isAnchorOutOfView = anchorBottom <= headerBottom;
-  if (!hasPassedEnoughCards || !isAnchorOutOfView) return;
-
-  state.openVideoKeys.delete(anchor.key);
-  state.videoAutoCollapseAnchor = null;
-  render();
 }
 
 function bindAmbientReactions() {

@@ -38,6 +38,12 @@ class FavoritesFrontendContractTests(unittest.TestCase):
         self.assertIn('動画へ戻る', app_js)
         self.assertIn('トークへ戻る', app_js)
 
+    def test_video_cards_do_not_auto_collapse_while_scrolling(self):
+        app_js = Path('app.js').read_text(encoding='utf-8')
+        self.assertNotIn('videoAutoCollapseAnchor', app_js)
+        self.assertNotIn('handleVideoAutoCollapseByCardPass', app_js)
+        self.assertNotIn('VIDEO_AUTO_COLLAPSE_PASSED_COUNT', app_js)
+
     def test_search_is_cross_mode(self):
         html = Path('index.html').read_text(encoding='utf-8')
         app_js = Path('app.js').read_text(encoding='utf-8')
