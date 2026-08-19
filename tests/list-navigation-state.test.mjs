@@ -27,7 +27,7 @@ test("動画一覧の表示状態とスクロール位置を復元できる", ()
   assert.equal(state.focusedVideoKeys, null);
   assert.deepEqual([...state.openVideoKeys], ["video-a", "video-b"]);
   assert.equal(state.isVideoExpandLock, true);
-  assert.deepEqual(state.videoAutoCollapseAnchor, { key: "video-b", index: 4 });
+  assert.equal(state.videoAutoCollapseAnchor, null);
 });
 
 test("保存後に元のSetを変更してもスナップショットへ影響しない", () => {

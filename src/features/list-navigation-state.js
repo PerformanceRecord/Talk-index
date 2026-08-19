@@ -8,9 +8,6 @@ export function captureVideoListState(state, scrollY = 0) {
     focusedVideoKeys: cloneOptionalSet(state?.focusedVideoKeys),
     openVideoKeys: cloneOptionalSet(state?.openVideoKeys) || new Set(),
     isVideoExpandLock: Boolean(state?.isVideoExpandLock),
-    videoAutoCollapseAnchor: state?.videoAutoCollapseAnchor
-      ? { ...state.videoAutoCollapseAnchor }
-      : null,
     scrollY: Math.max(0, Number(scrollY) || 0),
   };
 }
@@ -21,8 +18,8 @@ export function restoreVideoListState(state, snapshot) {
   state.focusedVideoKeys = cloneOptionalSet(snapshot.focusedVideoKeys);
   state.openVideoKeys = cloneOptionalSet(snapshot.openVideoKeys) || new Set();
   state.isVideoExpandLock = snapshot.isVideoExpandLock;
-  state.videoAutoCollapseAnchor = snapshot.videoAutoCollapseAnchor
-    ? { ...snapshot.videoAutoCollapseAnchor }
-    : null;
+  // Restoring the previous auto-collapse anchor would make the programmatic
+  // scroll trigger a render that changes the list height and causes a jump.
+  state.videoAutoCollapseAnchor = null;
   return snapshot.scrollY;
 }
