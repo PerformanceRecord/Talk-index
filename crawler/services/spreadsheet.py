@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 from urllib.parse import parse_qs, urlparse
 
 import gspread
+from gspread.exceptions import APIError
+from gspread.http_client import HTTPClient
+from requests.exceptions import RequestException
 
 from crawler.models import VideoItem
 from crawler.services.timestamps import build_timestamp_rows
@@ -16,15 +21,76 @@ class SpreadsheetServiceError(RuntimeError):
     pass
 
 
-TIMESTAMP_WITH_LABEL_PATTERN = re.compile(
-    r"(?P<ts>(?:\d{1,2}:)?\d{1,2}:\d{2})\s*(?P<label>[^\n\r]*)"
-)
-TIMESTAMP_TOKEN_PATTERN = re.compile(r"\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b")
-MARKER_TOKEN_PATTERN = re.compile(r"[└┝├]")
-MAJOR_LINE_PATTERN = re.compile(r"^\s*(?P<ts>\d{2}:\d{2}:\d{2})\s*(?P<label>.*)$")
-MINOR_LINE_PATTERN = re.compile(
-    r"^\s*(?P<marker>[┝└├])\s*(?P<ts>\d{1,2}:\d{2}:\d{2})\s*(?P<label>.*)$"
-)
+DEFAULT_SPREADSHEET_API_MAX_ATTEMPTS = 4
+DEFAULT_SPREADSHEET_API_BACKOFF_SECONDS = 1.0
+MAX_SPREADSHEET_API_ATTEMPTS = 10
+MAX_SPREADSHEET_API_BACKOFF_SECONDS = 60.0
+RETRYABLE_SPREADSHEET_STATUS_CODES = {408, 429}
+IDEMPOTENT_HTTP_METHODS = {"get", "head", "options", "put", "delete"}
+
+
+def _load_spreadsheet_retry_settings() -> tuple[int, float]:
+    raw_attempts = os.getenv("SPREADSHEET_API_MAX_ATTEMPTS", "").strip()
+    raw_backoff = os.getenv("SPREADSHEET_API_BACKOFF_SECONDS", "").strip()
+
+    try:
+        max_attempts = int(raw_attempts) if raw_attempts else DEFAULT_SPREADSHEET_API_MAX_ATTEMPTS
+    except ValueError as exc:
+        raise SpreadsheetServiceError("SPREADSHEET_API_MAX_ATTEMPTS は整数で指定してください。") from exc
+    if not 1 <= max_attempts <= MAX_SPREADSHEET_API_ATTEMPTS:
+        raise SpreadsheetServiceError(
+            f"SPREADSHEET_API_MAX_ATTEMPTS は1〜{MAX_SPREADSHEET_API_ATTEMPTS}で指定してください。"
+        )
+
+    try:
+        backoff_seconds = (
+            float(raw_backoff) if raw_backoff else DEFAULT_SPREADSHEET_API_BACKOFF_SECONDS
+        )
+    except ValueError as exc:
+        raise SpreadsheetServiceError("SPREADSHEET_API_BACKOFF_SECONDS は数値で指定してください。") from exc
+    if not 0 <= backoff_seconds <= MAX_SPREADSHEET_API_BACKOFF_SECONDS:
+        raise SpreadsheetServiceError(
+            "SPREADSHEET_API_BACKOFF_SECONDS は"
+            f"0〜{MAX_SPREADSHEET_API_BACKOFF_SECONDS:g}で指定してください。"
+        )
+
+    return max_attempts, backoff_seconds
+
+
+class ResilientSpreadsheetHTTPClient(HTTPClient):
+    """Retry bounded, idempotent Sheets requests after transient failures."""
+
+    def request(self, *args, **kwargs):
+        method = str(args[0] if args else kwargs.get("method", "")).strip().lower()
+        max_attempts, base_backoff_seconds = _load_spreadsheet_retry_settings()
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return super().request(*args, **kwargs)
+            except APIError as exc:
+                is_transient = (
+                    exc.code in RETRYABLE_SPREADSHEET_STATUS_CODES or exc.code >= 500
+                )
+                if method not in IDEMPOTENT_HTTP_METHODS or not is_transient or attempt >= max_attempts:
+                    raise
+                reason = f"HTTP {exc.code}"
+            except RequestException as exc:
+                if method not in IDEMPOTENT_HTTP_METHODS or attempt >= max_attempts:
+                    raise
+                reason = exc.__class__.__name__
+
+            delay = min(base_backoff_seconds * (2 ** (attempt - 1)), MAX_SPREADSHEET_API_BACKOFF_SECONDS)
+            print(
+                "warning: Google Sheets API 一時障害のため再試行: "
+                f"method={method or 'unknown'}, attempt={attempt + 1}/{max_attempts}, "
+                f"wait={delay:g}s, reason={reason}"
+            )
+            if delay > 0:
+                time.sleep(delay)
+
+        raise AssertionError("Google Sheets API retry loop exited unexpectedly")
+
+
 SPREADSHEET_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9-_]{20,}$")
 
 TITLE_LIST_STATE_RANGE = "F1:G3"
@@ -44,7 +110,10 @@ def build_gspread_client(service_account_json: str) -> gspread.Client:
     except json.JSONDecodeError as exc:
         raise SpreadsheetServiceError("GOOGLE_SERVICE_ACCOUNT_JSON のJSON形式が不正です。") from exc
 
-    return gspread.service_account_from_dict(account_info)
+    return gspread.service_account_from_dict(
+        account_info,
+        http_client=ResilientSpreadsheetHTTPClient,
+    )
 
 
 def extract_video_id_from_url(url: str) -> str:
@@ -633,81 +702,6 @@ def _next_data_row_for_title_list(values: list[list[str]]) -> int:
     return last_data_row + 1
 
 
-# 互換のため残す（主経路では未使用）
-def _extract_timestamp_rows(video_url: str, timestamp_comment: str) -> list[tuple[str, str, str, str]]:
-    text = (timestamp_comment or "").strip()
-    if not text:
-        return []
-
-    rows: list[tuple[str, str, str, str]] = []
-    current_major_text = ""
-    current_major_url = ""
-    has_minor_for_current_major = False
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        major_match = MAJOR_LINE_PATTERN.match(line)
-        if major_match:
-            if current_major_text and not has_minor_for_current_major:
-                rows.append((current_major_text, current_major_url, "", ""))
-
-            major_ts = _normalize_major_timestamp(major_match.group("ts") or "")
-            if major_ts:
-                label = _clean_heading_text(major_match.group("label") or "")
-                current_major_text = label
-                current_major_url = _build_timestamp_url(video_url, major_ts)
-                has_minor_for_current_major = False
-            continue
-
-        minor_match = MINOR_LINE_PATTERN.match(line)
-        if minor_match and current_major_text:
-            minor_raw_ts = (minor_match.group("ts") or "").strip()
-            minor_ts = _normalize_minor_timestamp(minor_raw_ts)
-            if minor_ts:
-                label = _clean_heading_text(minor_match.group("label") or "")
-                minor_text = label
-                rows.append(
-                    (
-                        current_major_text,
-                        current_major_url,
-                        minor_text,
-                        _build_timestamp_url(video_url, minor_raw_ts),
-                    )
-                )
-                has_minor_for_current_major = True
-            continue
-
-    if current_major_text and not has_minor_for_current_major:
-        rows.append((current_major_text, current_major_url, "", ""))
-
-    if rows:
-        return rows
-
-    for match in TIMESTAMP_WITH_LABEL_PATTERN.finditer(text):
-        ts = (match.group("ts") or "").strip()
-        label = (match.group("label") or "").strip()
-        normalized = _normalize_major_timestamp(ts)
-        if not normalized:
-            continue
-        major_text = _clean_heading_text(label)
-        rows.append((major_text, _build_timestamp_url(video_url, normalized), "", ""))
-
-    return rows
-
-
-def _clean_heading_text(text: str) -> str:
-    value = (text or "").strip()
-    if not value:
-        return ""
-    value = MARKER_TOKEN_PATTERN.sub(" ", value)
-    value = TIMESTAMP_TOKEN_PATTERN.sub(" ", value)
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
-
-
 def _format_tags(tags: Iterable[str]) -> str:
     normalized: list[str] = []
     for tag in tags:
@@ -718,50 +712,6 @@ def _format_tags(tags: Iterable[str]) -> str:
             value = f"#{value}"
         normalized.append(value)
     return ",".join(normalized)
-
-
-def _normalize_major_timestamp(timestamp: str) -> str:
-    total_seconds = _timestamp_to_seconds(timestamp)
-    if total_seconds < 0:
-        return ""
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
-def _normalize_minor_timestamp(timestamp: str) -> str:
-    total_seconds = _timestamp_to_seconds(timestamp)
-    if total_seconds < 0:
-        return ""
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-    return f"{hours}:{minutes:02d}:{seconds:02d}"
-
-
-def _build_timestamp_url(video_url: str, timestamp: str) -> str:
-    seconds = _timestamp_to_seconds(timestamp)
-    if seconds <= 0:
-        return video_url
-    separator = "&" if "?" in video_url else "?"
-    return f"{video_url}{separator}t={seconds}s"
-
-
-def _timestamp_to_seconds(timestamp: str) -> int:
-    raw = timestamp.strip()
-    if not raw:
-        return -1
-    parts = raw.split(":")
-    try:
-        nums = [int(p) for p in parts]
-    except ValueError:
-        return -1
-    if len(nums) == 2:
-        return nums[0] * 60 + nums[1]
-    if len(nums) == 3:
-        return nums[0] * 3600 + nums[1] * 60 + nums[2]
-    return -1
 
 
 def _to_jst_date(published_at: str) -> str:

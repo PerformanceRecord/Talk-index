@@ -5,6 +5,29 @@ from crawler.services.timestamps import build_timestamp_rows
 
 
 class TimestampTests(unittest.TestCase):
+    def test_description_chapters_accept_minute_second_format(self):
+        rows = build_timestamp_rows(
+            "https://www.youtube.com/watch?v=abc123def45",
+            description="0:00 オープニング\n12:34 メイントーク",
+        )
+
+        self.assertEqual([row[0] for row in rows], ["オープニング", "メイントーク"])
+        self.assertEqual(rows[1][1], "https://www.youtube.com/watch?v=abc123def45&t=754s")
+
+    def test_comment_accepts_minute_second_format(self):
+        source = TimestampSource(
+            source_type="top",
+            source_id="c1",
+            text="0:10 はじまり\n1:20 本編",
+        )
+
+        rows = build_timestamp_rows(
+            "https://www.youtube.com/watch?v=abc123def45",
+            timestamp_sources=[source],
+        )
+
+        self.assertEqual([row[0] for row in rows], ["はじまり", "本編"])
+
     def test_top_level_with_heading_and_children(self):
         source = TimestampSource(
             source_type="top",

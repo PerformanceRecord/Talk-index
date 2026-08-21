@@ -1,26 +1,89 @@
 from __future__ import annotations
 
+import json
 import os
-import re
+from dataclasses import dataclass
 from typing import Callable
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from crawler.models import TimestampSource, VideoItem
+from crawler.services.timestamps import count_timestamp_tokens
 from crawler.utils import extract_channel_hint, looks_like_channel_id
 
 Logger = Callable[[str], None]
-TIMESTAMP_PATTERN = re.compile(r"\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b")
 DEFAULT_TIMESTAMP_COMMENT_THREAD_LIMIT = 300
 DEFAULT_COMMENT_PAGE_SIZE = 100
-DEFAULT_TOP_COMMENT_MAX_PAGES = 5
+DEFAULT_TOP_COMMENT_MAX_PAGES = 3
 DEFAULT_TOP_COMMENT_MAX_ITEMS = 500
 DEFAULT_REPLY_MAX_PAGES_PER_THREAD = 3
+DEFAULT_TIMESTAMP_COMMENT_REQUEST_BUDGET = 12
+DEFAULT_UPLOAD_SCAN_MAX_PAGES = 4
+DEFAULT_API_RETRIES = 3
+QUOTA_ERROR_REASONS = {"dailyLimitExceeded", "quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
 
 
 class YouTubeServiceError(RuntimeError):
     pass
+
+
+class YouTubeQuotaExceededError(YouTubeServiceError):
+    pass
+
+
+class YouTubeCommentsUnavailableError(YouTubeServiceError):
+    pass
+
+
+@dataclass
+class _RequestBudget:
+    limit: int
+    used: int = 0
+
+    def try_consume(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+
+def _extract_http_error_reasons(exc: HttpError) -> set[str]:
+    raw_content = getattr(exc, "content", b"")
+    if isinstance(raw_content, bytes):
+        raw_content = raw_content.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(raw_content or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return set()
+
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    details = error.get("errors", []) if isinstance(error, dict) else []
+    return {
+        str(item.get("reason", "")).strip()
+        for item in details
+        if isinstance(item, dict) and str(item.get("reason", "")).strip()
+    }
+
+
+def _execute_request(request, operation: str, context: str = "") -> dict:
+    try:
+        return request.execute(num_retries=DEFAULT_API_RETRIES)
+    except HttpError as exc:
+        reasons = _extract_http_error_reasons(exc)
+        suffix = f", {context}" if context else ""
+        reason_text = ",".join(sorted(reasons)) or "unknown"
+        if "commentsDisabled" in reasons:
+            raise YouTubeCommentsUnavailableError(
+                f"{operation}: コメントが無効です{suffix}"
+            ) from exc
+        if reasons & QUOTA_ERROR_REASONS:
+            raise YouTubeQuotaExceededError(
+                f"{operation}: YouTube API クォータ不足です{suffix}, reason={reason_text}"
+            ) from exc
+        raise YouTubeServiceError(
+            f"{operation} でエラー{suffix}, reason={reason_text}, detail={exc}"
+        ) from exc
 
 
 def build_youtube_client(api_key: str):
@@ -41,10 +104,10 @@ def resolve_channel_id(youtube, channel_input: str, log: Logger | None = None) -
         log(f"チャンネル解決中: {hint}")
 
     query = hint.lstrip("@")
-    response = (
-        youtube.search()
-        .list(part="snippet", q=query, type="channel", maxResults=1)
-        .execute()
+    response = _execute_request(
+        youtube.search().list(part="snippet", q=query, type="channel", maxResults=1),
+        "search.list",
+        context=f"query={query}",
     )
 
     items = response.get("items", [])
@@ -64,15 +127,18 @@ def fetch_channel_videos(
     max_results: int,
     log: Logger | None = None,
     exclude_video_ids: set[str] | None = None,
+    max_pages: int = DEFAULT_UPLOAD_SCAN_MAX_PAGES,
 ) -> list[VideoItem]:
-    try:
-        channel_res = (
-            youtube.channels()
-            .list(part="contentDetails", id=channel_id, maxResults=1)
-            .execute()
-        )
-    except HttpError as exc:
-        raise YouTubeServiceError(f"channels.list でエラー: {exc}") from exc
+    if max_results <= 0:
+        return []
+    if max_pages <= 0:
+        raise YouTubeServiceError("uploads プレイリストの走査ページ上限は1以上で指定してください。")
+
+    channel_res = _execute_request(
+        youtube.channels().list(part="contentDetails", id=channel_id, maxResults=1),
+        "channels.list",
+        context=f"channel_id={channel_id}",
+    )
 
     channel_items = channel_res.get("items", [])
     if not channel_items:
@@ -93,22 +159,21 @@ def fetch_channel_videos(
     excluded_ids = {v.strip() for v in (exclude_video_ids or set()) if v.strip()}
     videos: list[VideoItem] = []
     page_token = None
+    pages_fetched = 0
 
-    while len(videos) < max_results:
+    while len(videos) < max_results and pages_fetched < max_pages:
         per_page = 50
-        try:
-            playlist_res = (
-                youtube.playlistItems()
-                .list(
-                    part="contentDetails",
-                    playlistId=uploads_playlist_id,
-                    maxResults=per_page,
-                    pageToken=page_token,
-                )
-                .execute()
-            )
-        except HttpError as exc:
-            raise YouTubeServiceError(f"playlistItems.list でエラー: {exc}") from exc
+        playlist_res = _execute_request(
+            youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=uploads_playlist_id,
+                maxResults=per_page,
+                pageToken=page_token,
+            ),
+            "playlistItems.list",
+            context=f"channel_id={channel_id}",
+        )
+        pages_fetched += 1
 
         playlist_items = playlist_res.get("items", [])
         if not playlist_items:
@@ -121,18 +186,15 @@ def fetch_channel_videos(
                 page_video_ids.append(video_id)
 
         if page_video_ids:
-            try:
-                videos_res = (
-                    youtube.videos()
-                    .list(
-                        part="snippet,liveStreamingDetails",
-                        id=",".join(page_video_ids),
-                        maxResults=len(page_video_ids),
-                    )
-                    .execute()
-                )
-            except HttpError as exc:
-                raise YouTubeServiceError(f"videos.list でエラー: {exc}") from exc
+            videos_res = _execute_request(
+                youtube.videos().list(
+                    part="snippet,liveStreamingDetails",
+                    id=",".join(page_video_ids),
+                    maxResults=len(page_video_ids),
+                ),
+                "videos.list",
+                context=f"count={len(page_video_ids)}",
+            )
 
             items_by_id = {item.get("id", ""): item for item in videos_res.get("items", [])}
             for video_id in page_video_ids:
@@ -171,8 +233,11 @@ def fetch_channel_videos(
                         video_id,
                         description=description,
                         video_channel_id=(snippet.get("channelId", "") or "").strip(),
+                        log=log,
                     )
                     timestamp_comment = _choose_best_comment_source_text(timestamp_sources)
+                except YouTubeQuotaExceededError:
+                    raise
                 except YouTubeServiceError as exc:
                     if log:
                         log(f"コメント抽出スキップ: video_id={video_id}, reason={exc}")
@@ -195,6 +260,12 @@ def fetch_channel_videos(
         if not page_token:
             break
 
+    if page_token and pages_fetched >= max_pages and log:
+        log(
+            "uploads プレイリスト走査を上限で終了: "
+            f"channel_id={channel_id}, pages={pages_fetched}, max_pages={max_pages}"
+        )
+
     return videos
 
 
@@ -203,6 +274,7 @@ def fetch_timestamp_sources(
     video_id: str,
     description: str | None = None,
     video_channel_id: str | None = None,
+    log: Logger | None = None,
 ) -> list[TimestampSource]:
     value = (video_id or "").strip()
     if not value:
@@ -232,15 +304,27 @@ def fetch_timestamp_sources(
         "TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD",
         DEFAULT_REPLY_MAX_PAGES_PER_THREAD,
     )
+    request_budget = _RequestBudget(
+        _load_positive_int_env(
+            "TIMESTAMP_COMMENT_REQUEST_BUDGET",
+            DEFAULT_TIMESTAMP_COMMENT_REQUEST_BUDGET,
+        )
+    )
     video_owner_channel_id = (video_channel_id or "").strip()
 
-    thread_items = _fetch_comment_threads(
-        youtube,
-        value,
-        thread_limit=min(thread_limit, top_max_items),
-        page_size=top_page_size,
-        max_pages=top_max_pages,
-    )
+    try:
+        thread_items = _fetch_comment_threads(
+            youtube,
+            value,
+            thread_limit=min(thread_limit, top_max_items),
+            page_size=top_page_size,
+            max_pages=top_max_pages,
+            request_budget=request_budget,
+        )
+    except YouTubeCommentsUnavailableError:
+        if log:
+            log(f"コメント取得対象外: video_id={value}, reason=commentsDisabled")
+        return results
     for item in thread_items:
         thread_snippet = item.get("snippet", {})
         pinned_hint = thread_snippet.get("isPinned")
@@ -267,6 +351,7 @@ def fetch_timestamp_sources(
             top_level_id=top_level_id,
             page_size=reply_page_size,
             max_pages=reply_max_pages,
+            request_budget=request_budget,
         )
         for reply in replies:
             reply_id = (reply.get("id") or "").strip()
@@ -286,6 +371,15 @@ def fetch_timestamp_sources(
     comment_sources.sort(key=lambda src: (_to_sortable_datetime(src.published_at), src.source_id))
     non_comments = [src for src in results if src.source_type == "description"]
     results = comment_sources + non_comments
+
+    if log:
+        log(
+            "timestamp source fetch: "
+            f"video_id={value}, api_requests={request_budget.used}/{request_budget.limit}, "
+            f"top={sum(1 for src in comment_sources if src.source_type == 'top')}, "
+            f"reply={sum(1 for src in comment_sources if src.source_type == 'reply')}, "
+            f"description={len(non_comments)}"
+        )
 
     return results
 
@@ -322,40 +416,56 @@ def _fetch_comment_threads(
     thread_limit: int,
     page_size: int,
     max_pages: int,
+    request_budget: _RequestBudget,
 ) -> list[dict]:
     items: list[dict] = []
-    page_token = None
-    pages_fetched = 0
+    seen_ids: set[str] = set()
+    order_page_limits = [("relevance", 1)]
+    if max_pages > 1:
+        order_page_limits.append(("time", max_pages - 1))
 
-    while len(items) < thread_limit and pages_fetched < max_pages:
-        per_page = min(page_size, thread_limit - len(items))
-        try:
-            response = (
-                youtube.commentThreads()
-                .list(
+    for order, order_max_pages in order_page_limits:
+        page_token = None
+        pages_fetched = 0
+        while len(items) < thread_limit and pages_fetched < order_max_pages:
+            if not request_budget.try_consume():
+                return items
+            per_page = min(page_size, thread_limit - len(items))
+            response = _execute_request(
+                youtube.commentThreads().list(
                     part="snippet,replies",
                     videoId=video_id,
-                    order="time",
+                    order=order,
                     textFormat="plainText",
                     maxResults=per_page,
                     pageToken=page_token,
-                )
-                .execute()
+                ),
+                "commentThreads.list",
+                context=f"video_id={video_id}, order={order}",
             )
-        except HttpError as exc:
-            raise YouTubeServiceError(
-                f"commentThreads.list でエラー: video_id={video_id}, detail={exc}"
-            ) from exc
 
-        page_items = response.get("items", [])
-        if not page_items:
-            break
+            page_items = response.get("items", [])
+            if not page_items:
+                break
 
-        items.extend(page_items)
-        pages_fetched += 1
-        page_token = response.get("nextPageToken")
-        if not page_token:
-            break
+            for item in page_items:
+                thread_id = (
+                    item.get("snippet", {}).get("topLevelComment", {}).get("id")
+                    or item.get("id")
+                    or ""
+                ).strip()
+                if thread_id and thread_id in seen_ids:
+                    continue
+                if thread_id:
+                    seen_ids.add(thread_id)
+                items.append(item)
+                if len(items) >= thread_limit:
+                    break
+
+            pages_fetched += 1
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
 
     return items
 
@@ -376,20 +486,17 @@ def list_timestamp_comments(
     if not video_id.strip():
         raise YouTubeServiceError("動画IDが空です。URLを確認してください。")
 
-    try:
-        response = (
-            youtube.commentThreads()
-            .list(
-                part="snippet,replies",
-                videoId=video_id,
-                order="relevance",
-                textFormat="plainText",
-                maxResults=max_results,
-            )
-            .execute()
-        )
-    except HttpError as exc:
-        raise YouTubeServiceError(f"commentThreads.list でエラー: video_id={video_id}, detail={exc}") from exc
+    response = _execute_request(
+        youtube.commentThreads().list(
+            part="snippet,replies",
+            videoId=video_id,
+            order="relevance",
+            textFormat="plainText",
+            maxResults=max_results,
+        ),
+        "commentThreads.list",
+        context=f"video_id={video_id}",
+    )
 
     results = _collect_timestamp_comment_rows(youtube, response)
 
@@ -430,6 +537,7 @@ def _fetch_all_replies(
     top_level_id: str,
     page_size: int = DEFAULT_COMMENT_PAGE_SIZE,
     max_pages: int = DEFAULT_REPLY_MAX_PAGES_PER_THREAD,
+    request_budget: _RequestBudget | None = None,
 ) -> list[dict]:
     embedded_replies = thread_item.get("replies", {}).get("comments", [])
     total_reply_count = int(thread_item.get("snippet", {}).get("totalReplyCount", 0) or 0)
@@ -439,34 +547,38 @@ def _fetch_all_replies(
     if not top_level_id:
         return embedded_replies
 
-    replies: list[dict] = []
+    replies: list[dict] = list(embedded_replies)
+    seen_ids = {(item.get("id") or "").strip() for item in replies if (item.get("id") or "").strip()}
     page_token = None
     pages_fetched = 0
     while pages_fetched < max_pages:
-        try:
-            response = (
-                youtube.comments()
-                .list(
-                    part="snippet",
-                    parentId=top_level_id,
-                    textFormat="plainText",
-                    maxResults=page_size,
-                    pageToken=page_token,
-                )
-                .execute()
-            )
-        except HttpError as exc:
-            raise YouTubeServiceError(
-                f"comments.list で返信取得に失敗: parent_id={top_level_id}, detail={exc}"
-            ) from exc
+        if request_budget is not None and not request_budget.try_consume():
+            break
+        response = _execute_request(
+            youtube.comments().list(
+                part="snippet",
+                parentId=top_level_id,
+                textFormat="plainText",
+                maxResults=page_size,
+                pageToken=page_token,
+            ),
+            "comments.list",
+            context=f"parent_id={top_level_id}",
+        )
 
-        replies.extend(response.get("items", []))
+        for item in response.get("items", []):
+            reply_id = (item.get("id") or "").strip()
+            if reply_id and reply_id in seen_ids:
+                continue
+            if reply_id:
+                seen_ids.add(reply_id)
+            replies.append(item)
         pages_fetched += 1
         page_token = response.get("nextPageToken")
         if not page_token:
             break
 
-    return replies or embedded_replies
+    return replies
 
 
 def _append_timestamp_comment_row(
@@ -478,37 +590,34 @@ def _append_timestamp_comment_row(
     if not text:
         return
 
-    timestamps = TIMESTAMP_PATTERN.findall(text)
-    if not timestamps:
+    timestamp_count = count_timestamp_tokens(text)
+    if timestamp_count <= 0:
         return
 
     results.append(
         {
             "text": text,
-            "timestamp_count": len(set(timestamps)),
+            "timestamp_count": timestamp_count,
             "like_count": int(snippet.get("likeCount", 0) or 0),
             "comment_type": comment_type,
         }
     )
 
 
-def fetch_video_item(youtube, video_id: str) -> VideoItem:
+def fetch_video_item(youtube, video_id: str, log: Logger | None = None) -> VideoItem:
     value = video_id.strip()
     if not value:
         raise YouTubeServiceError("動画IDが空です。URLを確認してください。")
 
-    try:
-        response = (
-            youtube.videos()
-            .list(
-                part="snippet,liveStreamingDetails",
-                id=value,
-                maxResults=1,
-            )
-            .execute()
-        )
-    except HttpError as exc:
-        raise YouTubeServiceError(f"videos.list でエラー: video_id={value}, detail={exc}") from exc
+    response = _execute_request(
+        youtube.videos().list(
+            part="snippet,liveStreamingDetails",
+            id=value,
+            maxResults=1,
+        ),
+        "videos.list",
+        context=f"video_id={value}",
+    )
 
     items = response.get("items", [])
     if not items:
@@ -529,6 +638,7 @@ def fetch_video_item(youtube, video_id: str) -> VideoItem:
         value,
         description=description,
         video_channel_id=(snippet.get("channelId", "") or "").strip(),
+        log=log,
     )
 
     return VideoItem(
@@ -552,20 +662,15 @@ def fetch_video_metadata_map(youtube, video_ids: list[str]) -> dict[str, VideoIt
     result: dict[str, VideoItem] = {}
     for i in range(0, len(normalized_ids), 50):
         chunk_ids = normalized_ids[i : i + 50]
-        try:
-            response = (
-                youtube.videos()
-                .list(
-                    part="snippet",
-                    id=",".join(chunk_ids),
-                    maxResults=len(chunk_ids),
-                )
-                .execute()
-            )
-        except HttpError as exc:
-            raise YouTubeServiceError(
-                f"videos.list でメタデータ取得に失敗: count={len(chunk_ids)}, detail={exc}"
-            ) from exc
+        response = _execute_request(
+            youtube.videos().list(
+                part="snippet",
+                id=",".join(chunk_ids),
+                maxResults=len(chunk_ids),
+            ),
+            "videos.list metadata",
+            context=f"count={len(chunk_ids)}",
+        )
 
         for item in response.get("items", []):
             video_id = (item.get("id") or "").strip()
@@ -588,8 +693,7 @@ def fetch_video_metadata_map(youtube, video_ids: list[str]) -> dict[str, VideoIt
 
 
 def _count_timestamps(text: str) -> int:
-    timestamps = TIMESTAMP_PATTERN.findall(text or "")
-    return len(set(timestamps)) if timestamps else 0
+    return count_timestamp_tokens(text)
 
 
 def _build_comment_source(

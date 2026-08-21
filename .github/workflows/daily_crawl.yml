@@ -2,15 +2,23 @@ name: Daily YouTube Crawl
 
 on:
   schedule:
-    # 毎日 04:00 JST = 19:00 UTC（前日）
-    - cron: "0 19 * * *"
-    # 毎日 16:00 JST = 07:00 UTC
-    - cron: "0 7 * * *"
+    # 毎日 04:17 JST = 19:17 UTC（前日）
+    - cron: "17 19 * * *"
+    # 毎日 16:17 JST = 07:17 UTC
+    - cron: "17 7 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-youtube-crawl
+  cancel-in-progress: false
 
 jobs:
   crawl-and-write-sheet:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -20,9 +28,13 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Verify crawler contracts
+        run: python -m unittest tests.test_youtube_and_daily tests.test_timestamps tests.test_spreadsheet
 
       - name: Run daily crawler
         env:
@@ -33,4 +45,14 @@ jobs:
           SPREADSHEET_WORKSHEET_NAME: ${{ secrets.SPREADSHEET_WORKSHEET_NAME }}
           TITLE_LIST_WORKSHEET_NAME: ${{ secrets.TITLE_LIST_WORKSHEET_NAME }}
           DAILY_MAX_RESULTS: ${{ secrets.DAILY_MAX_RESULTS }}
+          DAILY_NEW_VIDEO_LIMIT: ${{ secrets.DAILY_NEW_VIDEO_LIMIT }}
+          DAILY_RECHECK_LIMIT: ${{ secrets.DAILY_RECHECK_LIMIT }}
+          DAILY_RECENT_RECHECK_HOURS: ${{ secrets.DAILY_RECENT_RECHECK_HOURS }}
+          DAILY_UPLOAD_SCAN_MAX_PAGES: ${{ secrets.DAILY_UPLOAD_SCAN_MAX_PAGES }}
+          TIMESTAMP_COMMENT_REQUEST_BUDGET: ${{ secrets.TIMESTAMP_COMMENT_REQUEST_BUDGET }}
+          TIMESTAMP_COMMENT_THREAD_LIMIT: ${{ secrets.TIMESTAMP_COMMENT_THREAD_LIMIT }}
+          TIMESTAMP_TOP_COMMENT_MAX_PAGES: ${{ secrets.TIMESTAMP_TOP_COMMENT_MAX_PAGES }}
+          TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD: ${{ secrets.TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD }}
+          SPREADSHEET_API_MAX_ATTEMPTS: ${{ secrets.SPREADSHEET_API_MAX_ATTEMPTS }}
+          SPREADSHEET_API_BACKOFF_SECONDS: ${{ secrets.SPREADSHEET_API_BACKOFF_SECONDS }}
         run: python -m crawler.jobs.daily_crawl

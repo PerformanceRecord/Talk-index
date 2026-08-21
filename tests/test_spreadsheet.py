@@ -1,4 +1,8 @@
 import unittest
+from unittest.mock import patch
+
+from gspread.exceptions import APIError
+from requests import Response
 
 from crawler.models import VideoItem
 from crawler.services import spreadsheet
@@ -113,6 +117,15 @@ class FakeClient:
 
 
 class SpreadsheetTests(unittest.TestCase):
+    @staticmethod
+    def _api_error(status_code: int) -> APIError:
+        response = Response()
+        response.status_code = status_code
+        response._content = (
+            f'{{"error":{{"code":{status_code},"message":"temporary","status":"UNAVAILABLE"}}}}'
+        ).encode("utf-8")
+        return APIError(response)
+
     def _video(self, vid: str, title: str = "title") -> VideoItem:
         return VideoItem(
             video_id=vid,
@@ -187,6 +200,55 @@ class SpreadsheetTests(unittest.TestCase):
         self.assertEqual(sheet.get("A3:C3")[0], ["2026-04-03", "ok title", "zzz111yyy22"])
         self.assertEqual(sheet.get("A4:C4")[0], ["2026-04-04", "broken 2", "mmm999nnn88"])
         self.assertEqual(sheet.get("F1:G3"), [["key", "value"], ["refresh_cursor", "7"], ["updated_at", "2026-04-20T00:00:00Z"]])
+
+    def test_spreadsheet_http_client_retries_transient_get(self):
+        success = Response()
+        success.status_code = 200
+        client = object.__new__(spreadsheet.ResilientSpreadsheetHTTPClient)
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "SPREADSHEET_API_MAX_ATTEMPTS": "3",
+                    "SPREADSHEET_API_BACKOFF_SECONDS": "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                spreadsheet.HTTPClient,
+                "request",
+                side_effect=[self._api_error(503), success],
+            ) as request,
+            patch.object(spreadsheet.time, "sleep") as sleep,
+        ):
+            result = client.request("get", "https://sheets.googleapis.com/test")
+
+        self.assertIs(result, success)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_not_called()
+
+    def test_spreadsheet_http_client_does_not_retry_non_idempotent_post(self):
+        client = object.__new__(spreadsheet.ResilientSpreadsheetHTTPClient)
+
+        with patch.object(
+            spreadsheet.HTTPClient,
+            "request",
+            side_effect=self._api_error(503),
+        ) as request:
+            with self.assertRaises(APIError):
+                client.request("post", "https://sheets.googleapis.com/test")
+
+        self.assertEqual(request.call_count, 1)
+
+    def test_build_client_uses_bounded_retry_http_client(self):
+        with patch.object(spreadsheet.gspread, "service_account_from_dict") as factory:
+            spreadsheet.build_gspread_client('{"type":"service_account"}')
+
+        self.assertIs(
+            factory.call_args.kwargs["http_client"],
+            spreadsheet.ResilientSpreadsheetHTTPClient,
+        )
 
 
 if __name__ == "__main__":
