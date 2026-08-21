@@ -8,9 +8,10 @@ from urllib.parse import parse_qs, urlparse
 from crawler.models import TimestampSource
 
 Logger = Callable[[str], None]
-HMS_PATTERN = r"(?:\d{1,2}):[0-5]\d:[0-5]\d"
-LINE_END_PAREN_TS_PATTERN = re.compile(rf"^(?P<label>.*?)[\(（]\s*(?P<ts>{HMS_PATTERN})\s*[\)）]\s*$")
-LEADING_TS_PATTERN = re.compile(rf"^(?P<ts>{HMS_PATTERN})\s*(?P<label>.*)$")
+TIMESTAMP_TOKEN = r"\d{1,3}:[0-5]\d(?::[0-5]\d)?"
+TIMESTAMP_TOKEN_PATTERN = re.compile(rf"\b{TIMESTAMP_TOKEN}\b")
+LINE_END_PAREN_TS_PATTERN = re.compile(rf"^(?P<label>.*?)[\(（]\s*(?P<ts>{TIMESTAMP_TOKEN})\s*[\)）]\s*$")
+LEADING_TS_PATTERN = re.compile(rf"^(?P<ts>{TIMESTAMP_TOKEN})\s*(?P<label>.*)$")
 TREE_PREFIX_PATTERN = re.compile(r"^\s*(?P<prefix>[├┝└┗┣┠┡┢│┃\s]+)?(?P<body>.*)$")
 NOISE_PATTERN = re.compile(r"^[\s\-:：|／/、。・･]+|[\s\-:：|／/、。・･]+$")
 GENERIC_SHORT_WORDS = {"ここ", "好き", "最高", "神", "草", "笑", "www", "やばい", "神回"}
@@ -49,12 +50,14 @@ def build_timestamp_rows(
     sources = _build_effective_sources(description, timestamp_sources, fallback_text)
     comment_sources = [src for src in sources if src.source_type in {"top", "reply"}]
     comment_sources.sort(key=lambda src: ((src.published_at or "9999-99-99T99:99:99Z"), src.source_id))
+    description_sources = [src for src in sources if src.source_type == "description"]
+    timeline_sources = comment_sources + description_sources
 
     checked_top_count = sum(1 for src in comment_sources if src.source_type == "top")
     checked_reply_count = sum(1 for src in comment_sources if src.source_type == "reply")
 
     per_comment_entries: dict[str, list[ParsedTimestampEntry]] = {}
-    for src in comment_sources:
+    for src in timeline_sources:
         entries = _extract_entries_from_source(src, video_url)
         per_comment_entries[src.source_id] = entries
 
@@ -62,12 +65,12 @@ def build_timestamp_rows(
 
     primary_source_ids: set[str] = set()
     rejected_single_timestamp_comments_count = 0
-    for src in comment_sources:
+    for src in timeline_sources:
         entries = per_comment_entries.get(src.source_id, [])
         count = len(entries)
         if count <= 0:
             continue
-        if src.is_video_owner or src.is_pinned is True:
+        if src.source_type == "description" or src.is_video_owner or src.is_pinned is True:
             primary_source_ids.add(src.source_id)
             continue
         if count >= 2:
@@ -78,7 +81,7 @@ def build_timestamp_rows(
     has_primary = bool(primary_source_ids)
     selected: list[ParsedTimestampEntry] = []
 
-    for src in comment_sources:
+    for src in timeline_sources:
         entries = per_comment_entries.get(src.source_id, [])
         if not entries:
             continue
@@ -139,8 +142,15 @@ def _build_effective_sources(
             continue
         items.append(src)
 
-    if description.strip():
-        items.append(TimestampSource(source_type="description", text=description.strip()))
+    has_description_source = any(src.source_type == "description" for src in items)
+    if description.strip() and not has_description_source:
+        items.append(
+            TimestampSource(
+                source_type="description",
+                text=description.strip(),
+                source_id="description",
+            )
+        )
 
     if not items and fallback_text.strip():
         items.append(TimestampSource(source_type="top", text=fallback_text.strip()))
@@ -257,7 +267,7 @@ def _is_valid_single_supplement(entry: ParsedTimestampEntry) -> bool:
         return False
     if title in GENERIC_SHORT_WORDS:
         return False
-    if re.fullmatch(rf"{HMS_PATTERN}", entry.title):
+    if re.fullmatch(TIMESTAMP_TOKEN, entry.title):
         return False
     if len(title) <= 1:
         return False
@@ -287,7 +297,7 @@ def _clean_label(label: str) -> str:
     value = (label or "").strip()
     if not value:
         return ""
-    value = re.sub(rf"{HMS_PATTERN}", " ", value)
+    value = TIMESTAMP_TOKEN_PATTERN.sub(" ", value)
     value = re.sub(r"[()（）]", " ", value)
     value = NOISE_PATTERN.sub("", value)
     value = re.sub(r"\s+", " ", value).strip()
@@ -298,15 +308,26 @@ def _clean_label(label: str) -> str:
 
 def _timestamp_to_seconds(ts: str) -> int:
     parts = ts.strip().split(":")
-    if len(parts) != 3:
-        return -1
     try:
-        h, m, s = [int(x) for x in parts]
+        values = [int(x) for x in parts]
     except ValueError:
         return -1
-    if m < 0 or m >= 60 or s < 0 or s >= 60:
+    if len(values) == 2:
+        m, s = values
+        if m < 0 or s < 0 or s >= 60:
+            return -1
+        return m * 60 + s
+    if len(values) != 3:
+        return -1
+    h, m, s = values
+    if h < 0 or m < 0 or m >= 60 or s < 0 or s >= 60:
         return -1
     return h * 3600 + m * 60 + s
+
+
+def count_timestamp_tokens(value: str) -> int:
+    timestamps = TIMESTAMP_TOKEN_PATTERN.findall(value or "")
+    return len(set(timestamps)) if timestamps else 0
 
 
 def _format_time(seconds: int) -> str:

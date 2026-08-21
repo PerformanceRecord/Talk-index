@@ -18,6 +18,8 @@ from crawler.services.spreadsheet import (
     write_title_list_refresh_state,
 )
 from crawler.services.youtube import (
+    DEFAULT_UPLOAD_SCAN_MAX_PAGES,
+    YouTubeQuotaExceededError,
     build_youtube_client,
     fetch_channel_videos,
     fetch_video_item,
@@ -25,7 +27,7 @@ from crawler.services.youtube import (
 )
 
 
-def _load_positive_int_env(name: str, default: int) -> int:
+def _load_nonnegative_int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     if not raw:
         return default
@@ -41,20 +43,37 @@ def _load_positive_int_env(name: str, default: int) -> int:
     return value
 
 
-def _select_cyclic_targets(ordered_video_ids: list[str], current_cursor: int, limit: int) -> tuple[list[str], int]:
+def _load_positive_int_env(name: str, default: int) -> int:
+    value = _load_nonnegative_int_env(name, default)
+    if value <= 0:
+        raise RuntimeError(f"{name} は1以上で指定してください。")
+    return value
+
+
+def _select_cyclic_targets(
+    ordered_video_ids: list[str],
+    current_cursor: int,
+    limit: int,
+    exclude_video_ids: set[str] | None = None,
+) -> tuple[list[str], int]:
     if limit <= 0 or not ordered_video_ids:
         return [], 0
 
     total = len(ordered_video_ids)
     start_cursor = current_cursor % total
-    count = min(limit, total)
+    excluded = exclude_video_ids or set()
     selected: list[str] = []
+    scanned = 0
+    next_cursor = start_cursor
 
-    for i in range(count):
-        idx = (start_cursor + i) % total
-        selected.append(ordered_video_ids[idx])
+    while len(selected) < limit and scanned < total:
+        video_id = ordered_video_ids[next_cursor]
+        next_cursor = (next_cursor + 1) % total
+        scanned += 1
+        if video_id in excluded:
+            continue
+        selected.append(video_id)
 
-    next_cursor = (start_cursor + count) % total
     return selected, next_cursor
 
 
@@ -75,15 +94,19 @@ def _select_recheck_ids(
     limit: int,
     recent_hours: int,
     videos_by_id: dict[str, object],
+    exclude_video_ids: set[str] | None = None,
 ) -> tuple[list[str], int]:
     if limit <= 0 or not ordered_video_ids:
         return [], current_cursor if current_cursor >= 0 else 0
 
     now = datetime.now(timezone.utc)
     threshold = now.timestamp() - (recent_hours * 3600)
+    excluded = exclude_video_ids or set()
 
     recent_candidates: list[tuple[float, str]] = []
     for video_id in ordered_video_ids:
+        if video_id in excluded:
+            continue
         video = videos_by_id.get(video_id)
         published_at = getattr(video, "published_at", "")
         published = _parse_iso_datetime(str(published_at))
@@ -106,14 +129,13 @@ def _select_recheck_ids(
         selected_set.add(video_id)
 
     remaining = limit - len(selected)
-    cyclic_selected, next_cursor = _select_cyclic_targets(ordered_video_ids, current_cursor, remaining)
-    for video_id in cyclic_selected:
-        if len(selected) >= limit:
-            break
-        if video_id in selected_set:
-            continue
-        selected.append(video_id)
-        selected_set.add(video_id)
+    cyclic_selected, next_cursor = _select_cyclic_targets(
+        ordered_video_ids,
+        current_cursor,
+        remaining,
+        exclude_video_ids=selected_set | excluded,
+    )
+    selected.extend(cyclic_selected)
 
     return selected, next_cursor
 
@@ -141,9 +163,13 @@ def main() -> None:
     if not channel_id:
         raise RuntimeError("YOUTUBE_CHANNEL_ID が未設定です。")
 
-    daily_new_video_limit = _load_positive_int_env("DAILY_NEW_VIDEO_LIMIT", 2)
-    daily_recheck_limit = _load_positive_int_env("DAILY_RECHECK_LIMIT", 5)
-    daily_recent_recheck_hours = _load_positive_int_env("DAILY_RECENT_RECHECK_HOURS", 72)
+    daily_new_video_limit = _load_nonnegative_int_env("DAILY_NEW_VIDEO_LIMIT", 2)
+    daily_recheck_limit = _load_nonnegative_int_env("DAILY_RECHECK_LIMIT", 5)
+    daily_recent_recheck_hours = _load_nonnegative_int_env("DAILY_RECENT_RECHECK_HOURS", 72)
+    daily_upload_scan_max_pages = _load_positive_int_env(
+        "DAILY_UPLOAD_SCAN_MAX_PAGES",
+        DEFAULT_UPLOAD_SCAN_MAX_PAGES,
+    )
 
     youtube = build_youtube_client(youtube_api_key)
     gspread_client = build_gspread_client(service_account_json)
@@ -173,13 +199,18 @@ def main() -> None:
     )
 
     skip_ids = title_list_ids | existing_ids
-    fetched_candidates = fetch_channel_videos(
-        youtube,
-        channel_id,
-        max_results=max_results,
-        exclude_video_ids=skip_ids,
-    )
-    new_videos = fetched_candidates[:daily_new_video_limit]
+    candidate_limit = min(max_results, daily_new_video_limit)
+    fetched_candidates = []
+    if candidate_limit > 0:
+        fetched_candidates = fetch_channel_videos(
+            youtube,
+            channel_id,
+            max_results=candidate_limit,
+            exclude_video_ids=skip_ids,
+            max_pages=daily_upload_scan_max_pages,
+            log=print,
+        )
+    new_videos = fetched_candidates
 
     title_list_appended = append_title_list_rows(
         client=gspread_client,
@@ -208,9 +239,11 @@ def main() -> None:
     )
     current_cursor = int(refresh_state.get("refresh_cursor", 0) or 0)
 
-    videos_by_id = fetch_video_metadata_map(youtube, ordered_title_list_ids)
-    for video in fetched_candidates:
-        videos_by_id[video.video_id] = video
+    videos_by_id = {}
+    if daily_recheck_limit > 0:
+        videos_by_id = fetch_video_metadata_map(youtube, ordered_title_list_ids)
+        for video in fetched_candidates:
+            videos_by_id[video.video_id] = video
 
     recheck_ids, next_cursor = _select_recheck_ids(
         ordered_video_ids=ordered_title_list_ids,
@@ -218,12 +251,15 @@ def main() -> None:
         limit=daily_recheck_limit,
         recent_hours=daily_recent_recheck_hours,
         videos_by_id=videos_by_id,
+        exclude_video_ids={video.video_id for video in fetched_candidates},
     )
 
     recheck_videos = []
     for video_id in recheck_ids:
         try:
-            recheck_videos.append(fetch_video_item(youtube, video_id))
+            recheck_videos.append(fetch_video_item(youtube, video_id, log=print))
+        except YouTubeQuotaExceededError:
+            raise
         except Exception as exc:
             print(f"warning: 再評価取得スキップ video_id={video_id}, reason={exc}")
 
@@ -257,7 +293,9 @@ def main() -> None:
         f"channel_id={channel_id}, "
         f"fetched_candidates={len(fetched_candidates)}, "
         f"title_list_repaired={repaired_title_list_rows}, "
+        f"candidate_limit={candidate_limit}, "
         f"new_video_limit={daily_new_video_limit}, "
+        f"upload_scan_max_pages={daily_upload_scan_max_pages}, "
         f"new_selected={len(new_videos)}, "
         f"title_list_appended={title_list_appended}, "
         f"appended={appended_count}, "

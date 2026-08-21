@@ -1,16 +1,30 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 
 from crawler.jobs.daily_crawl import _select_recheck_ids
 from crawler.models import VideoItem
-from crawler.services.youtube import fetch_timestamp_sources
+from crawler.services.youtube import (
+    YouTubeQuotaExceededError,
+    _execute_request,
+    fetch_channel_videos,
+    fetch_timestamp_sources,
+)
 
 
 class _Exec:
-    def __init__(self, payload):
+    def __init__(self, payload=None, error=None):
         self.payload = payload
+        self.error = error
+        self.execute_kwargs = []
 
-    def execute(self):
+    def execute(self, **kwargs):
+        self.execute_kwargs.append(kwargs)
+        if self.error:
+            raise self.error
         return self.payload
 
 
@@ -23,6 +37,8 @@ class _CommentThreadsAPI:
         token = kwargs.get("pageToken")
         self.calls.append(kwargs)
         payload = self.pages.get(token, {"items": []})
+        if isinstance(payload, Exception):
+            return _Exec(error=payload)
         return _Exec(payload)
 
 
@@ -49,6 +65,33 @@ class _YoutubeMock:
 
     def comments(self):
         return self._replies
+
+
+class _ListAPI:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = []
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = self.payloads.pop(0) if self.payloads else {"items": []}
+        return _Exec(payload)
+
+
+class _DiscoveryYoutubeMock:
+    def __init__(self, playlist_payloads, video_payloads):
+        self._channels = _ListAPI([{"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UU-test"}}}]}])
+        self._playlist = _ListAPI(playlist_payloads)
+        self._videos = _ListAPI(video_payloads)
+
+    def channels(self):
+        return self._channels
+
+    def playlistItems(self):
+        return self._playlist
+
+    def videos(self):
+        return self._videos
 
 
 class YoutubeAndDailyTests(unittest.TestCase):
@@ -98,8 +141,11 @@ class YoutubeAndDailyTests(unittest.TestCase):
 
         tops = [s for s in sources if s.source_type == "top"]
         self.assertEqual(len(tops), 2)
-        self.assertEqual(len(youtube._threads.calls), 2)
-        self.assertEqual(youtube._threads.calls[0]["order"], "time")
+        self.assertEqual(len(youtube._threads.calls), 3)
+        self.assertEqual(
+            [call["order"] for call in youtube._threads.calls],
+            ["relevance", "time", "time"],
+        )
 
     def test_reply_fetch_has_page_cap(self):
         pages = {
@@ -136,6 +182,90 @@ class YoutubeAndDailyTests(unittest.TestCase):
 
         self.assertEqual(len(replies), 3)
         self.assertEqual(len(youtube._replies.calls), 3)
+
+    def test_comment_request_budget_caps_reply_pages(self):
+        pages = {
+            None: {
+                "items": [
+                    {
+                        "id": "t1",
+                        "snippet": {
+                            "topLevelComment": {
+                                "id": "c1",
+                                "snippet": {"textOriginal": "0:10 top"},
+                            },
+                            "totalReplyCount": 10,
+                        },
+                    }
+                ]
+            }
+        }
+        reply_pages = {
+            "c1": {
+                None: {"items": [{"id": "r1", "snippet": {"textOriginal": "0:20 reply"}}], "nextPageToken": "p2"},
+                "p2": {"items": [{"id": "r2", "snippet": {"textOriginal": "0:30 reply"}}]},
+            }
+        }
+        youtube = _YoutubeMock(pages, reply_pages=reply_pages)
+
+        with patch.dict(
+            "os.environ",
+            {"TIMESTAMP_COMMENT_REQUEST_BUDGET": "2", "TIMESTAMP_TOP_COMMENT_MAX_PAGES": "1"},
+            clear=False,
+        ):
+            sources = fetch_timestamp_sources(youtube, "abc123def45")
+
+        self.assertEqual(len(youtube._threads.calls), 1)
+        self.assertEqual(len(youtube._replies.calls), 1)
+        self.assertEqual([source.source_id for source in sources], ["c1", "r1"])
+
+    def test_comments_disabled_keeps_description_source(self):
+        error = HttpError(
+            Response({"status": "403", "reason": "Forbidden"}),
+            b'{"error":{"errors":[{"reason":"commentsDisabled"}]}}',
+        )
+        youtube = _YoutubeMock({None: error})
+
+        sources = fetch_timestamp_sources(
+            youtube,
+            "abc123def45",
+            description="0:00 opening\n1:20 topic",
+        )
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].source_type, "description")
+
+    def test_quota_error_is_not_hidden(self):
+        error = HttpError(
+            Response({"status": "403", "reason": "Forbidden"}),
+            b'{"error":{"errors":[{"reason":"quotaExceeded"}]}}',
+        )
+
+        with self.assertRaises(YouTubeQuotaExceededError):
+            _execute_request(_Exec(error=error), "commentThreads.list")
+
+    def test_upload_playlist_scan_stops_at_page_limit(self):
+        playlist_payloads = [
+            {"items": [{"contentDetails": {"videoId": "known000001"}}], "nextPageToken": "p2"},
+            {"items": [{"contentDetails": {"videoId": "known000002"}}], "nextPageToken": "p3"},
+            {"items": [{"contentDetails": {"videoId": "new00000003"}}]},
+        ]
+        video_payloads = [
+            {"items": [{"id": "known000001", "snippet": {}, "liveStreamingDetails": {}}]},
+            {"items": [{"id": "known000002", "snippet": {}, "liveStreamingDetails": {}}]},
+        ]
+        youtube = _DiscoveryYoutubeMock(playlist_payloads, video_payloads)
+
+        videos = fetch_channel_videos(
+            youtube,
+            "UC-test",
+            max_results=1,
+            exclude_video_ids={"known000001", "known000002"},
+            max_pages=2,
+        )
+
+        self.assertEqual(videos, [])
+        self.assertEqual(len(youtube._playlist.calls), 2)
 
     def test_pinned_flag_missing_does_not_crash(self):
         pages = {
@@ -194,6 +324,52 @@ class YoutubeAndDailyTests(unittest.TestCase):
         self.assertEqual(selected[:2], ["new2", "new1"])
         self.assertEqual(len(selected), 3)
         self.assertEqual(next_cursor, 1)
+
+    def test_select_recheck_fills_past_recent_cursor_overlap(self):
+        now = datetime.now(timezone.utc)
+        ordered = ["new1", "new2", "old1"]
+        videos_by_id = {
+            "new1": VideoItem("new1", "new1", "", now.isoformat(), ""),
+            "new2": VideoItem("new2", "new2", "", now.isoformat(), ""),
+            "old1": VideoItem(
+                "old1",
+                "old1",
+                "",
+                (now - timedelta(hours=200)).isoformat(),
+                "",
+            ),
+        }
+
+        selected, next_cursor = _select_recheck_ids(
+            ordered_video_ids=ordered,
+            current_cursor=0,
+            limit=3,
+            recent_hours=72,
+            videos_by_id=videos_by_id,
+        )
+
+        self.assertEqual(selected[:2], ["new1", "new2"])
+        self.assertEqual(selected[2], "old1")
+        self.assertEqual(next_cursor, 0)
+
+    def test_select_recheck_excludes_videos_fetched_in_same_run(self):
+        now = datetime.now(timezone.utc)
+        ordered = ["new1", "old1", "old2"]
+        videos_by_id = {
+            video_id: VideoItem(video_id, video_id, "", now.isoformat(), "")
+            for video_id in ordered
+        }
+
+        selected, _ = _select_recheck_ids(
+            ordered_video_ids=ordered,
+            current_cursor=0,
+            limit=2,
+            recent_hours=72,
+            videos_by_id=videos_by_id,
+            exclude_video_ids={"new1"},
+        )
+
+        self.assertEqual(selected, ["old1", "old2"])
 
 
 if __name__ == "__main__":

@@ -99,9 +99,9 @@ npm run ci:build
 ## GitHub Actions / 自動運用
 
 - `daily_crawl.yml`  
-  毎日 `22:00 UTC`（`07:00 JST`）に `python -m crawler.jobs.daily_crawl` を実行。
+  毎日 `19:17 / 07:17 UTC`（`04:17 / 16:17 JST`）に `python -m crawler.jobs.daily_crawl` を実行。
 - `upload_index_json_to_r2.yml`  
-  毎日 `22:10 UTC`（`07:10 JST`）に `python exporter/sheet_to_json_and_upload_r2.py` を実行。
+  毎日 `20:00 / 08:00 UTC`（`05:00 / 17:00 JST`）に `python exporter/sheet_to_json_and_upload_r2.py` を実行。
 - `cloudflare_build_contract.yml`  
   main への push と pull request 時に `npm ci` → build 契約チェックを実行。
 
@@ -109,7 +109,7 @@ npm run ci:build
 
 - クロール系:  
   `YOUTUBE_API_KEY`, `YOUTUBE_CHANNEL_ID`, `SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `DAILY_MAX_RESULTS`  
-  （任意）`SPREADSHEET_WORKSHEET_NAME`, `TITLE_LIST_WORKSHEET_NAME`, `DAILY_NEW_VIDEO_LIMIT`, `DAILY_RECHECK_LIMIT`
+  （任意）`SPREADSHEET_WORKSHEET_NAME`, `TITLE_LIST_WORKSHEET_NAME`, `DAILY_NEW_VIDEO_LIMIT`, `DAILY_RECHECK_LIMIT`, `DAILY_RECENT_RECHECK_HOURS`, `DAILY_UPLOAD_SCAN_MAX_PAGES`, `TIMESTAMP_COMMENT_REQUEST_BUDGET`, `TIMESTAMP_COMMENT_THREAD_LIMIT`, `TIMESTAMP_TOP_COMMENT_MAX_PAGES`, `TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD`, `SPREADSHEET_API_MAX_ATTEMPTS`, `SPREADSHEET_API_BACKOFF_SECONDS`
 - R2 アップロード系:  
   `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`  
   + `SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON` などシート参照に必要な値
@@ -341,7 +341,7 @@ npm run ci:build
 
 - R2 の詳細運用: `docs/r2_operation_guide.md`
 
-## 日次クロールの運用ルール（2026-04 更新）
+## 日次クロールの運用ルール（2026-08 更新）
 
 - 追加シート `運用状態` は使いません。
 - 巡回状態は `タイトルリスト!F1:G3` に保存します。
@@ -354,11 +354,21 @@ npm run ci:build
   - `F1:G3`: 状態セル（`key/value`, `refresh_cursor`, `updated_at`）
 - `タイトルリスト` は並び順を固定で運用してください（並び替えしない）。
 - 1回の daily crawl で、**新規2件 + 再評価5件** を処理します（環境変数で変更可）。
-- 再評価は「公開後72時間以内の動画」を優先し、残りを `refresh_cursor` 巡回で補完します（`DAILY_RECENT_RECHECK_HOURS` で変更可）。
-- タイムスタンプ抽出は **トップコメント + 返信コメントを統合** し、`publishedAt` 昇順で解析した後に `startSeconds` 昇順でHTML用に整形します。
-- コメント取得は上限付きです（既定: トップコメント `maxResults=100 / 最大5ページ / 最大500件`、返信 `maxResults=100 / 1スレッド最大3ページ`）。
+- 新規動画の uploads プレイリスト走査は既定で最大4ページ（200動画）までです。`DAILY_UPLOAD_SCAN_MAX_PAGES` で変更できます。長期停止後に未取得動画が200件を超える場合は、この値を一時的に増やして `workflow_dispatch` を実行してください。
+- 再評価は「公開後72時間以内の動画」を優先し、残りを `refresh_cursor` 巡回で補完します（`DAILY_RECENT_RECHECK_HOURS` で変更可）。同じ実行で取得済みの新規動画は再評価対象から除外します。
+- タイムスタンプ抽出は **概要欄 + 関連度順/新着順のトップコメント + 返信コメント** を統合し、`MM:SS` と `HH:MM:SS` を解析した後に開始秒順でHTML用に整形します。
+- コメント取得は上限付きです（既定: トップコメント `maxResults=100 / 最大3ページ / 最大300件`、返信 `maxResults=100 / 1スレッド最大3ページ`、動画1件あたりAPIリクエスト最大12回）。
 - 取得上限は環境変数で変更できます。  
-  `TIMESTAMP_COMMENT_THREAD_LIMIT`, `TIMESTAMP_TOP_COMMENT_PAGE_SIZE`, `TIMESTAMP_TOP_COMMENT_MAX_PAGES`, `TIMESTAMP_TOP_COMMENT_MAX_ITEMS`, `TIMESTAMP_REPLY_PAGE_SIZE`, `TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD`
+  `TIMESTAMP_COMMENT_REQUEST_BUDGET`, `TIMESTAMP_COMMENT_THREAD_LIMIT`, `TIMESTAMP_TOP_COMMENT_PAGE_SIZE`, `TIMESTAMP_TOP_COMMENT_MAX_PAGES`, `TIMESTAMP_TOP_COMMENT_MAX_ITEMS`, `TIMESTAMP_REPLY_PAGE_SIZE`, `TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD`
+- YouTube API の各読み取りは一時的な5xx等に対して最大3回リトライします。`commentsDisabled` は概要欄のみで継続し、`quotaExceeded` 等は Actions を失敗させて異常を見逃さない構成です。
+- Google Sheets API の `GET` / `PUT` 等の冪等なリクエストは、408・429・5xx・通信断に対して既定4回まで指数バックオフで再試行します。重複行を避けるため、追記系の `POST` は自動再試行しません。`SPREADSHEET_API_MAX_ATTEMPTS` と `SPREADSHEET_API_BACKOFF_SECONDS` で調整できます。
+- 同じ日次クロールの多重実行は `concurrency` で直列化し、30分でタイムアウトします。実行前にクローラー契約テストも行います。
+
+### 継続運用上の注意
+
+- GitHub Actions の予約実行は時刻どおりの開始を保証しません。混雑しやすい時0分を避け、17分開始にしています。
+- 公開リポジトリは60日間リポジトリ活動がないと予約ワークフローが自動停止します。少なくとも月1回、`Daily YouTube Crawl` の直近実行日時を確認してください。停止時は Actions 画面から再有効化し、`workflow_dispatch` で疎通確認します。
+- 監視対象は `Daily YouTube Crawl` と、その後に動く `Upload index JSON to R2` の両方です。前者が成功しても後者が失敗すると公開JSONは更新されません。
 
 
 ## フロント実行入口の整理（2026-07-24）
