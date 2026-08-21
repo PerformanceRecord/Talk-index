@@ -1788,7 +1788,7 @@ function createRecommendationBlock(items, sourceTalkKey) {
 
   const title = document.createElement("h4");
   title.className = "recommend-title";
-  title.textContent = "次に掘るテーマ";
+  title.textContent = "こんなのもおすすめ！";
   wrap.appendChild(title);
 
   if (!items.length) {

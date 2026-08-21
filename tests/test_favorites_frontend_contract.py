@@ -20,7 +20,7 @@ class FavoritesFrontendContractTests(unittest.TestCase):
         self.assertIn('openTalkForExploration(item.id, sourceTalkKey);', app_js)
         self.assertIn('state.viewMode = "talk";', app_js)
         self.assertIn('state.focusedTalkKeys = new Set([talk.key]);', app_js)
-        self.assertIn('title.textContent = "次に掘るテーマ";', app_js)
+        self.assertIn('title.textContent = "こんなのもおすすめ！";', app_js)
 
     def test_video_and_talk_views_have_cross_navigation(self):
         html = Path('index.html').read_text(encoding='utf-8')
