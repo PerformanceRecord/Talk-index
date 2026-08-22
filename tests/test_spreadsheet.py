@@ -117,6 +117,23 @@ class FakeClient:
 
 
 class SpreadsheetTests(unittest.TestCase):
+    def test_read_video_ids_without_timestamps_only_returns_empty_heading_groups(self):
+        sheet = FakeWorksheet()
+        sheet.update(
+            "A1:H4",
+            [
+                ["タイトル", "日付", "URL", "大見出し", "大見出しURL", "小見出し", "小見出しURL", "自動検出タグ"],
+                ["missing", "2026-01-01", "https://youtu.be/AAAAAAAAAAA", "", "", "", "", ""],
+                ["found", "2026-01-02", "https://youtu.be/BBBBBBBBBBB", "開始", "url", "", "", ""],
+                ["found", "2026-01-02", "https://youtu.be/BBBBBBBBBBB", "", "", "補足", "", ""],
+            ],
+        )
+        client = FakeClient(sheet)
+
+        result = spreadsheet.read_video_ids_without_timestamps(client, "dummy", "索引")
+
+        self.assertEqual(result, {"AAAAAAAAAAA"})
+
     @staticmethod
     def _api_error(status_code: int) -> APIError:
         response = Response()

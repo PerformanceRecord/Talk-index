@@ -378,6 +378,42 @@ def read_existing_video_ids(
     return existing_ids
 
 
+def read_video_ids_without_timestamps(
+    client: gspread.Client,
+    spreadsheet_id: str,
+    worksheet_name: str,
+) -> set[str]:
+    if not spreadsheet_id.strip():
+        raise SpreadsheetServiceError("SPREADSHEET_ID が未設定です。")
+
+    book = client.open_by_key(spreadsheet_id)
+    sheet = _get_or_create_sheet(book, worksheet_name)
+    values = sheet.get_all_values()
+    if len(values) <= 1:
+        return set()
+
+    header = values[0]
+    normalized_header = [_normalize_header_name(value) for value in header]
+    try:
+        heading_index = normalized_header.index(_normalize_header_name("大見出し"))
+    except ValueError:
+        return set()
+
+    has_heading_by_video_id: dict[str, bool] = {}
+    for row in values[1:]:
+        video_id = extract_video_id_from_row(row=row, header=header)
+        if not video_id:
+            continue
+        has_heading = len(row) > heading_index and bool((row[heading_index] or "").strip())
+        has_heading_by_video_id[video_id] = has_heading_by_video_id.get(video_id, False) or has_heading
+
+    return {
+        video_id
+        for video_id, has_heading in has_heading_by_video_id.items()
+        if not has_heading
+    }
+
+
 def read_video_ids_from_sheet_rows(
     client: gspread.Client,
     spreadsheet_id: str,

@@ -95,6 +95,100 @@ class _DiscoveryYoutubeMock:
 
 
 class YoutubeAndDailyTests(unittest.TestCase):
+    def test_select_recheck_prioritizes_missing_timestamp_archives(self):
+        ordered = ["old-complete", "old-missing", "recent"]
+        now = datetime.now(timezone.utc)
+        videos_by_id = {
+            "old-complete": VideoItem("old-complete", "old", "", "2020-01-01T00:00:00Z", ""),
+            "old-missing": VideoItem("old-missing", "missing", "", "2020-01-02T00:00:00Z", ""),
+            "recent": VideoItem("recent", "recent", "", now.isoformat(), ""),
+        }
+
+        selected, _ = _select_recheck_ids(
+            ordered_video_ids=ordered,
+            current_cursor=0,
+            limit=2,
+            recent_hours=72,
+            videos_by_id=videos_by_id,
+            priority_video_ids={"old-missing"},
+        )
+
+        self.assertEqual(selected, ["old-missing", "recent"])
+
+    def test_reply_budget_prioritizes_threads_with_timestamp_evidence(self):
+        def thread(comment_id, embedded_reply=None):
+            item = {
+                "id": f"thread-{comment_id}",
+                "snippet": {
+                    "topLevelComment": {
+                        "id": comment_id,
+                        "snippet": {"textOriginal": "通常コメント"},
+                    },
+                    "totalReplyCount": 2,
+                },
+            }
+            if embedded_reply:
+                item["replies"] = {"comments": [embedded_reply]}
+            return item
+
+        target_embedded = {"id": "embedded", "snippet": {"textOriginal": "0:00 開始"}}
+        pages = {None: {"items": [thread("decoy"), thread("target", target_embedded)]}}
+        reply_pages = {
+            "decoy": {None: {"items": [{"id": "waste", "snippet": {"textOriginal": "雑談"}}]}},
+            "target": {None: {"items": [{"id": "timeline", "snippet": {"textOriginal": "10:00 本編"}}]}},
+        }
+        youtube = _YoutubeMock(pages, reply_pages=reply_pages)
+
+        with patch.dict(
+            "os.environ",
+            {"TIMESTAMP_COMMENT_REQUEST_BUDGET": "2", "TIMESTAMP_TOP_COMMENT_MAX_PAGES": "1"},
+            clear=False,
+        ):
+            sources = fetch_timestamp_sources(youtube, "abc123def45")
+
+        self.assertEqual([call["parentId"] for call in youtube._replies.calls], ["target"])
+        self.assertIn("timeline", [source.source_id for source in sources])
+
+    def test_old_archive_scans_late_comment_pages(self):
+        def thread(comment_id, text):
+            return {
+                "id": f"thread-{comment_id}",
+                "snippet": {
+                    "topLevelComment": {
+                        "id": comment_id,
+                        "snippet": {"textOriginal": text},
+                    },
+                    "totalReplyCount": 0,
+                },
+            }
+
+        pages = {
+            None: {"items": [thread("c1", "通常コメント")], "nextPageToken": "p2"},
+            "p2": {"items": [thread("c2", "通常コメント")], "nextPageToken": "p3"},
+            "p3": {"items": [thread("c3", "通常コメント")], "nextPageToken": "p4"},
+            "p4": {"items": [thread("c4", "通常コメント")], "nextPageToken": "p5"},
+            "p5": {"items": [thread("timeline", "0:00 開始\n10:00 本編")]},
+        }
+        youtube = _YoutubeMock(pages)
+
+        sources = fetch_timestamp_sources(youtube, "abc123def45")
+
+        self.assertIn("timeline", [source.source_id for source in sources])
+        self.assertGreaterEqual(len(youtube._threads.calls), 6)
+
+    def test_fullwidth_description_is_kept_as_timestamp_source(self):
+        youtube = _YoutubeMock({None: {"items": []}})
+
+        sources = fetch_timestamp_sources(
+            youtube,
+            "abc123def45",
+            description="０：００ オープニング\n１２：３４ 本編",
+        )
+
+        descriptions = [source for source in sources if source.source_type == "description"]
+        self.assertEqual(len(descriptions), 1)
+        self.assertEqual(descriptions[0].timestamp_count, 2)
+
     def test_comment_threads_multi_page_with_order_time(self):
         pages = {
             None: {

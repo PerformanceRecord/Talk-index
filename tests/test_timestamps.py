@@ -5,6 +5,15 @@ from crawler.services.timestamps import build_timestamp_rows
 
 
 class TimestampTests(unittest.TestCase):
+    def test_fullwidth_and_bulleted_chapters_are_normalized(self):
+        rows = build_timestamp_rows(
+            "https://www.youtube.com/watch?v=abc123def45",
+            description="・０：００ オープニング\n- １２：３４ メイントーク",
+        )
+
+        self.assertEqual([row[0] for row in rows], ["オープニング", "メイントーク"])
+        self.assertEqual(rows[1][1], "https://www.youtube.com/watch?v=abc123def45&t=754s")
+
     def test_description_chapters_accept_minute_second_format(self):
         rows = build_timestamp_rows(
             "https://www.youtube.com/watch?v=abc123def45",
