@@ -3,6 +3,10 @@ import path from "node:path";
 
 const requiredOutputFiles = ["dist/index.html", "dist/app.js", "dist/styles.css"];
 
+function stripUrlSuffix(specifier) {
+  return specifier.split(/[?#]/, 1)[0];
+}
+
 function fail(message) {
   console.error(`❌ preview check failed: ${message}`);
   process.exit(1);
@@ -38,7 +42,7 @@ if (!moduleEntryMatch) {
 }
 
 for (const match of html.matchAll(/\b(?:href|src)=["'](\.\/[^"']+)["']/gi)) {
-  const assetPath = path.resolve("dist", match[1]);
+  const assetPath = path.resolve("dist", stripUrlSuffix(match[1]));
   if (!fs.existsSync(assetPath)) {
     fail(`missing local HTML asset: ${match[1]}`);
   }
@@ -46,7 +50,7 @@ for (const match of html.matchAll(/\b(?:href|src)=["'](\.\/[^"']+)["']/gi)) {
 
 function resolveLocalModule(importerPath, specifier) {
   if (!specifier.startsWith(".")) return null;
-  const resolved = path.resolve(path.dirname(importerPath), specifier);
+  const resolved = path.resolve(path.dirname(importerPath), stripUrlSuffix(specifier));
   const relative = path.relative(path.resolve("dist"), resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     fail(`module import escapes dist/: ${specifier} from ${importerPath}`);
