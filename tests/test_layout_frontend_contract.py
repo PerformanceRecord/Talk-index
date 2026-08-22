@@ -10,6 +10,8 @@ class LayoutFrontendContractTests(unittest.TestCase):
         self.assertLess(html.index('class="left-toolbar"'), html.index('id="results"'))
         self.assertIn('.left-pane > .results {', styles)
         self.assertIn('overflow-y: auto;', styles)
+        self.assertIn('flex-direction: column;', styles)
+        self.assertIn('flex: 0 0 auto;', styles)
         self.assertNotIn('bottom: 12px;', styles)
 
 
