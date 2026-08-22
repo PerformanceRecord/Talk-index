@@ -23,20 +23,53 @@
       </div>
 
       <section class="surface talk-area" aria-label="トーク集">
-        <div class="view-tabs-row">
-          <div class="view-tabs" role="tablist" aria-label="探し方を切り替える">
-            <button id="tab-video" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="results">動画単位</button>
-            <button id="tab-talk" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="results">トーク単位</button>
-            <button id="tab-favorites" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="results">テーマ探索</button>
-          </div>
-          <button id="top-button" class="top-button" type="button" aria-label="ページ先頭へ戻る">TOP</button>
-        </div>
-        <div id="mode-context" class="mode-context" hidden></div>
-        <div id="notice" class="notice"></div>
-        <div id="error" class="error" role="alert"></div>
-        <div id="search-overview" class="search-overview" aria-live="polite" hidden></div>
         <div class="content-layout">
-          <section id="results" class="results" aria-live="polite" aria-label="検索結果"></section>
+          <div class="left-pane">
+            <div class="left-toolbar">
+              <div class="view-tabs-row">
+                <div class="view-tabs" role="tablist" aria-label="探し方を切り替える">
+                  <button id="tab-video" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="results">動画単位</button>
+                  <button id="tab-talk" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="results">トーク単位</button>
+                  <button id="tab-favorites" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="results">テーマ探索</button>
+                </div>
+                <button id="top-button" class="top-button" type="button" aria-label="動画一覧の先頭へ戻る">TOP</button>
+              </div>
+              <section class="surface control-menu" aria-label="操作メニュー">
+                <div class="control-row top-row">
+                  <div id="server-status" class="server-status server-status--loading" aria-live="polite">読込中…</div>
+                  <div class="menu-buttons">
+                    <button id="toggle-all" type="button" disabled>詳細を閉じる</button>
+                    <button id="explore-theme" type="button">テーマを探す</button>
+                  </div>
+                </div>
+                <div class="control-row search-row">
+                  <div class="search-field">
+                    <label for="search">
+                      横断検索
+                      <span>動画タイトル・トークテーマ・小見出し</span>
+                    </label>
+                    <div class="search-input-wrap">
+                      <input
+                        id="search"
+                        type="search"
+                        placeholder="動画タイトル・トークテーマを検索"
+                        aria-label="動画タイトル・トークテーマを横断検索"
+                        enterkeyhint="search"
+                        autocomplete="off"
+                      />
+                      <kbd aria-hidden="true">/</kbd>
+                    </div>
+                  </div>
+                  <button id="clear-search" type="button">クリア</button>
+                </div>
+              </section>
+            </div>
+            <div id="mode-context" class="mode-context" hidden></div>
+            <div id="notice" class="notice"></div>
+            <div id="error" class="error" role="alert"></div>
+            <div id="search-overview" class="search-overview" aria-live="polite" hidden></div>
+            <section id="results" class="results" aria-live="polite" aria-label="検索結果"></section>
+          </div>
           <aside id="video-detail-panel" class="video-detail-panel" aria-label="選択した動画の詳細" hidden>
             <div class="video-player-pane">
               <div class="detail-panel-heading">
@@ -60,35 +93,6 @@
         </div>
       </section>
 
-      <section class="surface control-menu" aria-label="操作メニュー">
-        <div class="control-row top-row">
-          <div id="server-status" class="server-status server-status--loading" aria-live="polite">読込中…</div>
-          <div class="menu-buttons">
-            <button id="toggle-all" type="button" disabled>詳細を閉じる</button>
-            <button id="explore-theme" type="button">テーマを探す</button>
-          </div>
-        </div>
-        <div class="control-row search-row">
-          <div class="search-field">
-            <label for="search">
-              横断検索
-              <span>動画タイトル・トークテーマ・小見出し</span>
-            </label>
-            <div class="search-input-wrap">
-              <input
-                id="search"
-                type="search"
-                placeholder="動画タイトル・トークテーマを検索"
-                aria-label="動画タイトル・トークテーマを横断検索"
-                enterkeyhint="search"
-                autocomplete="off"
-              />
-              <kbd aria-hidden="true">/</kbd>
-            </div>
-          </div>
-          <button id="clear-search" type="button">クリア</button>
-        </div>
-      </section>
     </main>
 
     <script>
