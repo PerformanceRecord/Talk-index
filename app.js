@@ -124,6 +124,11 @@ const refs = {
   notice: document.getElementById("notice"),
   error: document.getElementById("error"),
   results: document.getElementById("results"),
+  videoDetailPanel: document.getElementById("video-detail-panel"),
+  videoDetailTitle: document.getElementById("video-detail-title"),
+  videoDetailPlayer: document.getElementById("video-detail-player"),
+  videoDetailContent: document.getElementById("video-detail-content"),
+  videoDetailClose: document.getElementById("video-detail-close"),
   serverStatus: document.getElementById("server-status"),
   toggleAll: document.getElementById("toggle-all"),
   clearSearch: document.getElementById("clear-search"),
@@ -1165,6 +1170,39 @@ function createHeadingFormattedAnchor(href, label) {
   return a;
 }
 
+function buildYoutubeEmbedUrl(value) {
+  const videoId = extractYoutubeVideoId(value);
+  if (!videoId) return "";
+  let start = 0;
+  try {
+    const parsed = new URL(value);
+    const rawStart = parsed.searchParams.get("t") || parsed.searchParams.get("start") || "";
+    const matched = rawStart.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/i);
+    if (matched) {
+      start = (Number(matched[1]) || 0) * 3600 + (Number(matched[2]) || 0) * 60 + (Number(matched[3]) || 0);
+    }
+  } catch {
+    // Invalid URLs are already filtered before links are rendered.
+  }
+  const query = new URLSearchParams({ rel: "0" });
+  if (start > 0) query.set("start", String(start));
+  return `https://www.youtube-nocookie.com/embed/${videoId}?${query}`;
+}
+
+function closeVideoDetailPanel() {
+  state.openVideoKeys = new Set();
+  refs.videoDetailPanel.hidden = true;
+  refs.videoDetailPlayer.removeAttribute("src");
+  document.body.classList.remove("has-mobile-video-detail");
+  render();
+}
+
+function updateVideoDetailPlayer(video, url = video?.url) {
+  const src = buildYoutubeEmbedUrl(url) || buildYoutubeEmbedUrl(video?.url);
+  refs.videoDetailTitle.textContent = video?.title || "選択した動画";
+  if (src && refs.videoDetailPlayer.src !== src) refs.videoDetailPlayer.src = src;
+}
+
 function getHeadingIdFromObject(obj, fallback = "") {
   return text(obj?.headingId || obj?.heading_id || obj?.id || obj?.key || fallback);
 }
@@ -1647,10 +1685,8 @@ function updateToggleAllButton() {
   const search = parseSearch(state.search);
 
   if (state.viewMode === "video") {
-    const videos = getFilteredVideos(search);
-    const allOpen = videos.length > 0 && getDisplayedVideoOpenKeys(videos).size === videos.length;
-    refs.toggleAll.disabled = videos.length === 0;
-    refs.toggleAll.textContent = allOpen ? "おりたたむ" : "全て展開";
+    refs.toggleAll.disabled = state.openVideoKeys.size === 0;
+    refs.toggleAll.textContent = "詳細を閉じる";
     return;
   }
 
@@ -1941,6 +1977,9 @@ function renderCards(videos) {
   if (!videos.length) return renderNoResult();
 
   refs.results.innerHTML = "";
+  refs.videoDetailContent.innerHTML = "";
+  refs.videoDetailPanel.hidden = true;
+  document.body.classList.remove("has-mobile-video-detail");
   const openKeys = getDisplayedVideoOpenKeys(videos);
   const lockClass = state.isVideoExpandLock ? " is-expand-locked" : "";
 
@@ -1997,7 +2036,7 @@ function renderCards(videos) {
     summary.append(main, side);
 
     const detail = document.createElement("div");
-    detail.className = "card-detail";
+    detail.className = "card-detail video-panel-detail";
 
     const sectionList = document.createElement("div");
     sectionList.className = "section-list";
@@ -2032,6 +2071,12 @@ function renderCards(videos) {
           ? createHeadingFormattedAnchor(sec.sectionUrl, sec.name)
           : createHeadingFormattedSpan(sec.name);
         label.classList.add("section-link");
+        if (sec.sectionUrl && isValidHttpUrl(sec.sectionUrl)) {
+          label.addEventListener("click", (event) => {
+            event.preventDefault();
+            updateVideoDetailPlayer(video, sec.sectionUrl);
+          });
+        }
         const headingId = getHeadingIdFromObject(sec, sec.name);
         const favoriteButton = createFavoriteButton(
           headingId,
@@ -2106,7 +2151,7 @@ function renderCards(videos) {
       if (state.openVideoKeys.has(video.key)) {
         state.openVideoKeys.delete(video.key);
       } else {
-        state.openVideoKeys.add(video.key);
+        state.openVideoKeys = new Set([video.key]);
         if (!Array.isArray(video.sections)) {
           render();
           await ensureVideoDetailsLoaded(video);
@@ -2124,7 +2169,13 @@ function renderCards(videos) {
       void toggleCard();
     });
 
-    card.append(summary, detail);
+    if (openKeys.has(video.key)) {
+      refs.videoDetailPanel.hidden = false;
+      refs.videoDetailContent.appendChild(detail);
+      updateVideoDetailPlayer(video);
+      document.body.classList.add("has-mobile-video-detail");
+    }
+    card.append(summary);
     refs.results.appendChild(card);
   });
 }
@@ -2445,6 +2496,9 @@ function render() {
     renderCards(filtered);
     updateServerStatus("ok", filtered.length);
   } else if (state.viewMode === "talk") {
+    refs.videoDetailPanel.hidden = true;
+    refs.videoDetailPlayer.removeAttribute("src");
+    document.body.classList.remove("has-mobile-video-detail");
     renderTalkCards(filtered);
     const trail = createExplorationTrail();
     if (trail) refs.results.prepend(trail);
@@ -2655,15 +2709,8 @@ async function startThemeExploration() {
 
 function toggleAllByMode() {
   if (state.viewMode === "video") {
-    const videos = getFilteredVideos();
-    const allOpen = videos.length > 0 && getDisplayedVideoOpenKeys(videos).size === videos.length;
-    if (allOpen) {
-      state.openVideoKeys = new Set();
-      state.isVideoExpandLock = false;
-      return;
-    }
-    state.openVideoKeys = new Set(videos.map((video) => video.key));
-    state.isVideoExpandLock = true;
+    state.openVideoKeys = new Set();
+    state.isVideoExpandLock = false;
     return;
   }
   if (state.viewMode === "favorites") return;
@@ -2823,6 +2870,8 @@ async function init() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
+  refs.videoDetailClose.addEventListener("click", closeVideoDetailPanel);
+
   window.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
 
   window.addEventListener("resize", () => {
@@ -2856,3 +2905,4 @@ async function init() {
 }
 
 init();
+
