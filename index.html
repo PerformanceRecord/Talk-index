@@ -35,14 +35,36 @@
         <div id="notice" class="notice"></div>
         <div id="error" class="error" role="alert"></div>
         <div id="search-overview" class="search-overview" aria-live="polite" hidden></div>
-        <section id="results" class="results" aria-live="polite" aria-label="検索結果"></section>
+        <div class="content-layout">
+          <section id="results" class="results" aria-live="polite" aria-label="検索結果"></section>
+          <aside id="video-detail-panel" class="video-detail-panel" aria-label="選択した動画の詳細" hidden>
+            <div class="video-player-pane">
+              <div class="detail-panel-heading">
+                <strong id="video-detail-title">動画を選択してください</strong>
+                <button id="video-detail-close" class="detail-panel-close" type="button" aria-label="動画詳細を閉じる">閉じる</button>
+              </div>
+              <div class="video-player-wrap">
+                <iframe
+                  id="video-detail-player"
+                  title="選択した動画の再生プレイヤー"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowfullscreen
+                ></iframe>
+              </div>
+            </div>
+            <div class="video-headings-pane">
+              <h2>トークの大見出し</h2>
+              <div id="video-detail-content" class="video-detail-content"></div>
+            </div>
+          </aside>
+        </div>
       </section>
 
       <section class="surface control-menu" aria-label="操作メニュー">
         <div class="control-row top-row">
           <div id="server-status" class="server-status server-status--loading" aria-live="polite">読込中…</div>
           <div class="menu-buttons">
-            <button id="toggle-all" type="button">全て展開</button>
+            <button id="toggle-all" type="button" disabled>詳細を閉じる</button>
             <button id="explore-theme" type="button">テーマを探す</button>
           </div>
         </div>
