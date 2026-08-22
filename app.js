@@ -2867,6 +2867,7 @@ async function init() {
   });
 
   refs.topButton.addEventListener("click", () => {
+    refs.results.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
