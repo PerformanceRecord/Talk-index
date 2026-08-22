@@ -12,6 +12,7 @@ from crawler.services.spreadsheet import (
     read_existing_video_ids,
     read_ordered_video_ids_from_title_list,
     read_title_list_refresh_state,
+    read_video_ids_without_timestamps,
     repair_title_list_schema,
     upsert_videos_by_video_id,
     upsert_title_list_rows,
@@ -95,6 +96,7 @@ def _select_recheck_ids(
     recent_hours: int,
     videos_by_id: dict[str, object],
     exclude_video_ids: set[str] | None = None,
+    priority_video_ids: set[str] | None = None,
 ) -> tuple[list[str], int]:
     if limit <= 0 or not ordered_video_ids:
         return [], current_cursor if current_cursor >= 0 else 0
@@ -102,6 +104,17 @@ def _select_recheck_ids(
     now = datetime.now(timezone.utc)
     threshold = now.timestamp() - (recent_hours * 3600)
     excluded = exclude_video_ids or set()
+    priority_ids = priority_video_ids or set()
+
+    selected: list[str] = []
+    selected_set: set[str] = set()
+    for video_id in ordered_video_ids:
+        if len(selected) >= limit:
+            break
+        if video_id in excluded or video_id not in priority_ids:
+            continue
+        selected.append(video_id)
+        selected_set.add(video_id)
 
     recent_candidates: list[tuple[float, str]] = []
     for video_id in ordered_video_ids:
@@ -120,11 +133,11 @@ def _select_recheck_ids(
         recent_candidates.append((published_ts, video_id))
 
     recent_candidates.sort(key=lambda x: x[0], reverse=True)
-    selected: list[str] = []
-    selected_set: set[str] = set()
     for _, video_id in recent_candidates:
         if len(selected) >= limit:
             break
+        if video_id in selected_set:
+            continue
         selected.append(video_id)
         selected_set.add(video_id)
 
@@ -164,7 +177,7 @@ def main() -> None:
         raise RuntimeError("YOUTUBE_CHANNEL_ID が未設定です。")
 
     daily_new_video_limit = _load_nonnegative_int_env("DAILY_NEW_VIDEO_LIMIT", 2)
-    daily_recheck_limit = _load_nonnegative_int_env("DAILY_RECHECK_LIMIT", 5)
+    daily_recheck_limit = _load_nonnegative_int_env("DAILY_RECHECK_LIMIT", 15)
     daily_recent_recheck_hours = _load_nonnegative_int_env("DAILY_RECENT_RECHECK_HOURS", 72)
     daily_upload_scan_max_pages = _load_positive_int_env(
         "DAILY_UPLOAD_SCAN_MAX_PAGES",
@@ -193,6 +206,11 @@ def main() -> None:
         )
     )
     existing_ids = read_existing_video_ids(
+        client=gspread_client,
+        spreadsheet_id=spreadsheet_id,
+        worksheet_name=worksheet_name,
+    )
+    missing_timestamp_ids = read_video_ids_without_timestamps(
         client=gspread_client,
         spreadsheet_id=spreadsheet_id,
         worksheet_name=worksheet_name,
@@ -252,6 +270,7 @@ def main() -> None:
         recent_hours=daily_recent_recheck_hours,
         videos_by_id=videos_by_id,
         exclude_video_ids={video.video_id for video in fetched_candidates},
+        priority_video_ids=missing_timestamp_ids,
     )
 
     recheck_videos = []
@@ -301,6 +320,7 @@ def main() -> None:
         f"appended={appended_count}, "
         f"ordered_title_list_count={len(ordered_title_list_ids)}, "
         f"recheck_limit={daily_recheck_limit}, "
+        f"missing_timestamp_count={len(missing_timestamp_ids)}, "
         f"recent_recheck_hours={daily_recent_recheck_hours}, "
         f"recheck_selected_count={len(recheck_ids)}, "
         f"recheck_upserted_rows={rechecked_count}, "
