@@ -353,11 +353,11 @@ npm run ci:build
   - `C列`: `動画固有ID`
   - `F1:G3`: 状態セル（`key/value`, `refresh_cursor`, `updated_at`）
 - `タイトルリスト` は並び順を固定で運用してください（並び替えしない）。
-- 1回の daily crawl で、**新規2件 + 再評価5件** を処理します（環境変数で変更可）。
+- 1回の daily crawl で、**新規2件 + 再評価15件** を処理します（環境変数で変更可）。再評価では、大見出しが1件もない過去動画を最優先にします。
 - 新規動画の uploads プレイリスト走査は既定で最大4ページ（200動画）までです。`DAILY_UPLOAD_SCAN_MAX_PAGES` で変更できます。長期停止後に未取得動画が200件を超える場合は、この値を一時的に増やして `workflow_dispatch` を実行してください。
 - 再評価は「公開後72時間以内の動画」を優先し、残りを `refresh_cursor` 巡回で補完します（`DAILY_RECENT_RECHECK_HOURS` で変更可）。同じ実行で取得済みの新規動画は再評価対象から除外します。
 - タイムスタンプ抽出は **概要欄 + 関連度順/新着順のトップコメント + 返信コメント** を統合し、`MM:SS` と `HH:MM:SS` を解析した後に開始秒順でHTML用に整形します。
-- コメント取得は上限付きです（既定: トップコメント `maxResults=100 / 最大3ページ / 最大300件`、返信 `maxResults=100 / 1スレッド最大3ページ`、動画1件あたりAPIリクエスト最大12回）。
+- コメント取得は上限付きです（既定: トップコメント `maxResults=100 / 関連度1ページ+新着順最大5ページ / 最大500件`、返信 `maxResults=100 / 1スレッド最大3ページ`、動画1件あたりAPIリクエスト最大24回）。
 - 取得上限は環境変数で変更できます。  
   `TIMESTAMP_COMMENT_REQUEST_BUDGET`, `TIMESTAMP_COMMENT_THREAD_LIMIT`, `TIMESTAMP_TOP_COMMENT_PAGE_SIZE`, `TIMESTAMP_TOP_COMMENT_MAX_PAGES`, `TIMESTAMP_TOP_COMMENT_MAX_ITEMS`, `TIMESTAMP_REPLY_PAGE_SIZE`, `TIMESTAMP_REPLY_MAX_PAGES_PER_THREAD`
 - YouTube API の各読み取りは一時的な5xx等に対して最大3回リトライします。`commentsDisabled` は概要欄のみで継続し、`quotaExceeded` 等は Actions を失敗させて異常を見逃さない構成です。
