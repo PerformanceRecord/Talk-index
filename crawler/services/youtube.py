@@ -13,12 +13,12 @@ from crawler.services.timestamps import count_timestamp_tokens
 from crawler.utils import extract_channel_hint, looks_like_channel_id
 
 Logger = Callable[[str], None]
-DEFAULT_TIMESTAMP_COMMENT_THREAD_LIMIT = 300
+DEFAULT_TIMESTAMP_COMMENT_THREAD_LIMIT = 500
 DEFAULT_COMMENT_PAGE_SIZE = 100
-DEFAULT_TOP_COMMENT_MAX_PAGES = 3
+DEFAULT_TOP_COMMENT_MAX_PAGES = 6
 DEFAULT_TOP_COMMENT_MAX_ITEMS = 500
 DEFAULT_REPLY_MAX_PAGES_PER_THREAD = 3
-DEFAULT_TIMESTAMP_COMMENT_REQUEST_BUDGET = 12
+DEFAULT_TIMESTAMP_COMMENT_REQUEST_BUDGET = 24
 DEFAULT_UPLOAD_SCAN_MAX_PAGES = 4
 DEFAULT_API_RETRIES = 3
 QUOTA_ERROR_REASONS = {"dailyLimitExceeded", "quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
@@ -325,7 +325,12 @@ def fetch_timestamp_sources(
         if log:
             log(f"コメント取得対象外: video_id={value}, reason=commentsDisabled")
         return results
-    for item in thread_items:
+    prioritized_thread_items = sorted(
+        enumerate(thread_items),
+        key=lambda pair: (_thread_timestamp_priority(pair[1]), -pair[0]),
+        reverse=True,
+    )
+    for _, item in prioritized_thread_items:
         thread_snippet = item.get("snippet", {})
         pinned_hint = thread_snippet.get("isPinned")
         is_pinned = bool(pinned_hint) if isinstance(pinned_hint, bool) else None
@@ -382,6 +387,20 @@ def fetch_timestamp_sources(
         )
 
     return results
+
+
+def _thread_timestamp_priority(item: dict) -> tuple[int, int]:
+    snippet = item.get("snippet", {})
+    top_text = (
+        snippet.get("topLevelComment", {}).get("snippet", {}).get("textOriginal", "")
+        or ""
+    )
+    embedded_replies = item.get("replies", {}).get("comments", [])
+    embedded_count = sum(
+        count_timestamp_tokens(reply.get("snippet", {}).get("textOriginal", "") or "")
+        for reply in embedded_replies
+    )
+    return (embedded_count, count_timestamp_tokens(top_text))
 
 
 def _load_comment_thread_limit() -> int:
