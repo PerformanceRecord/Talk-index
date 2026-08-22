@@ -13,8 +13,10 @@ TIMESTAMP_TOKEN_PATTERN = re.compile(rf"\b{TIMESTAMP_TOKEN}\b")
 LINE_END_PAREN_TS_PATTERN = re.compile(rf"^(?P<label>.*?)[\(（]\s*(?P<ts>{TIMESTAMP_TOKEN})\s*[\)）]\s*$")
 LEADING_TS_PATTERN = re.compile(rf"^(?P<ts>{TIMESTAMP_TOKEN})\s*(?P<label>.*)$")
 TREE_PREFIX_PATTERN = re.compile(r"^\s*(?P<prefix>[├┝└┗┣┠┡┢│┃\s]+)?(?P<body>.*)$")
+BULLET_PREFIX_PATTERN = re.compile(r"^(?:[-*•●○・]|\d+[.)）])\s*")
 NOISE_PATTERN = re.compile(r"^[\s\-:：|／/、。・･]+|[\s\-:：|／/、。・･]+$")
 GENERIC_SHORT_WORDS = {"ここ", "好き", "最高", "神", "草", "笑", "www", "やばい", "神回"}
+TIMESTAMP_TRANSLATION = str.maketrans("０１２３４５６７８９：", "0123456789:")
 
 
 @dataclass
@@ -285,10 +287,12 @@ def _normalize_title(title: str) -> str:
 
 
 def _normalize_line(line: str) -> str:
-    value = (line or "").replace("\u3000", " ").replace("\t", " ").strip()
+    value = normalize_timestamp_text(line)
+    value = value.replace("\u3000", " ").replace("\t", " ").strip()
     if not value:
         return ""
     value = value.replace("｜", "|")
+    value = BULLET_PREFIX_PATTERN.sub("", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
@@ -326,8 +330,12 @@ def _timestamp_to_seconds(ts: str) -> int:
 
 
 def count_timestamp_tokens(value: str) -> int:
-    timestamps = TIMESTAMP_TOKEN_PATTERN.findall(value or "")
+    timestamps = TIMESTAMP_TOKEN_PATTERN.findall(normalize_timestamp_text(value))
     return len(set(timestamps)) if timestamps else 0
+
+
+def normalize_timestamp_text(value: str) -> str:
+    return (value or "").translate(TIMESTAMP_TRANSLATION)
 
 
 def _format_time(seconds: int) -> str:
