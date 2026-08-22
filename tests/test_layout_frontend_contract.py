@@ -7,6 +7,7 @@ class LayoutFrontendContractTests(unittest.TestCase):
         html = Path('index.html').read_text(encoding='utf-8')
         styles = Path('styles.css').read_text(encoding='utf-8')
 
+        self.assertIn('styles.css?v=20260822-card-height', html)
         self.assertLess(html.index('class="left-toolbar"'), html.index('id="results"'))
         self.assertIn('.left-pane > .results {', styles)
         self.assertIn('overflow-y: auto;', styles)
