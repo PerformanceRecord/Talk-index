@@ -92,29 +92,20 @@ def _parse_iso_datetime(raw: str) -> datetime | None:
 def _select_recheck_ids(
     ordered_video_ids: list[str],
     current_cursor: int,
-    limit: int,
+    recent_limit: int,
+    backlog_limit: int,
     recent_hours: int,
     videos_by_id: dict[str, object],
     exclude_video_ids: set[str] | None = None,
-    priority_video_ids: set[str] | None = None,
+    missing_timestamp_ids: set[str] | None = None,
 ) -> tuple[list[str], int]:
-    if limit <= 0 or not ordered_video_ids:
+    if (recent_limit <= 0 and backlog_limit <= 0) or not ordered_video_ids:
         return [], current_cursor if current_cursor >= 0 else 0
 
     now = datetime.now(timezone.utc)
     threshold = now.timestamp() - (recent_hours * 3600)
     excluded = exclude_video_ids or set()
-    priority_ids = priority_video_ids or set()
-
-    selected: list[str] = []
-    selected_set: set[str] = set()
-    for video_id in ordered_video_ids:
-        if len(selected) >= limit:
-            break
-        if video_id in excluded or video_id not in priority_ids:
-            continue
-        selected.append(video_id)
-        selected_set.add(video_id)
+    missing_ids = missing_timestamp_ids or set()
 
     recent_candidates: list[tuple[float, str]] = []
     for video_id in ordered_video_ids:
@@ -133,24 +124,21 @@ def _select_recheck_ids(
         recent_candidates.append((published_ts, video_id))
 
     recent_candidates.sort(key=lambda x: x[0], reverse=True)
-    for _, video_id in recent_candidates:
-        if len(selected) >= limit:
-            break
-        if video_id in selected_set:
-            continue
-        selected.append(video_id)
-        selected_set.add(video_id)
+    recent_selected = [video_id for _, video_id in recent_candidates[:recent_limit]]
+    recent_set = set(recent_selected)
 
-    remaining = limit - len(selected)
-    cyclic_selected, next_cursor = _select_cyclic_targets(
-        ordered_video_ids,
+    backlog_ids = [
+        video_id
+        for video_id in ordered_video_ids
+        if video_id in missing_ids and video_id not in recent_set and video_id not in excluded
+    ]
+    backlog_selected, next_cursor = _select_cyclic_targets(
+        backlog_ids,
         current_cursor,
-        remaining,
-        exclude_video_ids=selected_set | excluded,
+        backlog_limit,
     )
-    selected.extend(cyclic_selected)
 
-    return selected, next_cursor
+    return recent_selected + backlog_selected, next_cursor
 
 
 def main() -> None:
@@ -177,8 +165,13 @@ def main() -> None:
         raise RuntimeError("YOUTUBE_CHANNEL_ID が未設定です。")
 
     daily_new_video_limit = _load_nonnegative_int_env("DAILY_NEW_VIDEO_LIMIT", 2)
-    daily_recheck_limit = _load_nonnegative_int_env("DAILY_RECHECK_LIMIT", 15)
-    daily_recent_recheck_hours = _load_nonnegative_int_env("DAILY_RECENT_RECHECK_HOURS", 72)
+    legacy_recheck_limit = _load_nonnegative_int_env("DAILY_RECHECK_LIMIT", 15)
+    daily_recent_recheck_limit = _load_nonnegative_int_env("DAILY_RECENT_RECHECK_LIMIT", 10)
+    daily_backlog_recheck_limit = _load_nonnegative_int_env(
+        "DAILY_BACKLOG_RECHECK_LIMIT",
+        legacy_recheck_limit,
+    )
+    daily_recent_recheck_hours = _load_nonnegative_int_env("DAILY_RECENT_RECHECK_HOURS", 96)
     daily_upload_scan_max_pages = _load_positive_int_env(
         "DAILY_UPLOAD_SCAN_MAX_PAGES",
         DEFAULT_UPLOAD_SCAN_MAX_PAGES,
@@ -258,7 +251,7 @@ def main() -> None:
     current_cursor = int(refresh_state.get("refresh_cursor", 0) or 0)
 
     videos_by_id = {}
-    if daily_recheck_limit > 0:
+    if daily_recent_recheck_limit > 0 or daily_backlog_recheck_limit > 0:
         videos_by_id = fetch_video_metadata_map(youtube, ordered_title_list_ids)
         for video in fetched_candidates:
             videos_by_id[video.video_id] = video
@@ -266,11 +259,12 @@ def main() -> None:
     recheck_ids, next_cursor = _select_recheck_ids(
         ordered_video_ids=ordered_title_list_ids,
         current_cursor=current_cursor,
-        limit=daily_recheck_limit,
+        recent_limit=daily_recent_recheck_limit,
+        backlog_limit=daily_backlog_recheck_limit,
         recent_hours=daily_recent_recheck_hours,
         videos_by_id=videos_by_id,
         exclude_video_ids={video.video_id for video in fetched_candidates},
-        priority_video_ids=missing_timestamp_ids,
+        missing_timestamp_ids=missing_timestamp_ids,
     )
 
     recheck_videos = []
@@ -319,7 +313,8 @@ def main() -> None:
         f"title_list_appended={title_list_appended}, "
         f"appended={appended_count}, "
         f"ordered_title_list_count={len(ordered_title_list_ids)}, "
-        f"recheck_limit={daily_recheck_limit}, "
+        f"recent_recheck_limit={daily_recent_recheck_limit}, "
+        f"backlog_recheck_limit={daily_backlog_recheck_limit}, "
         f"missing_timestamp_count={len(missing_timestamp_ids)}, "
         f"recent_recheck_hours={daily_recent_recheck_hours}, "
         f"recheck_selected_count={len(recheck_ids)}, "
