@@ -95,7 +95,7 @@ class _DiscoveryYoutubeMock:
 
 
 class YoutubeAndDailyTests(unittest.TestCase):
-    def test_select_recheck_prioritizes_missing_timestamp_archives(self):
+    def test_select_recheck_keeps_recent_and_missing_archive_in_separate_slots(self):
         ordered = ["old-complete", "old-missing", "recent"]
         now = datetime.now(timezone.utc)
         videos_by_id = {
@@ -107,13 +107,14 @@ class YoutubeAndDailyTests(unittest.TestCase):
         selected, _ = _select_recheck_ids(
             ordered_video_ids=ordered,
             current_cursor=0,
-            limit=2,
+            recent_limit=1,
+            backlog_limit=1,
             recent_hours=72,
             videos_by_id=videos_by_id,
-            priority_video_ids={"old-missing"},
+            missing_timestamp_ids={"old-missing"},
         )
 
-        self.assertEqual(selected, ["old-missing", "recent"])
+        self.assertEqual(selected, ["recent", "old-missing"])
 
     def test_reply_budget_prioritizes_threads_with_timestamp_evidence(self):
         def thread(comment_id, embedded_reply=None):
@@ -410,9 +411,11 @@ class YoutubeAndDailyTests(unittest.TestCase):
         selected, next_cursor = _select_recheck_ids(
             ordered_video_ids=ordered,
             current_cursor=0,
-            limit=3,
+            recent_limit=2,
+            backlog_limit=1,
             recent_hours=72,
             videos_by_id=videos_by_id,
+            missing_timestamp_ids={"old1", "old2"},
         )
 
         self.assertEqual(selected[:2], ["new2", "new1"])
@@ -437,9 +440,11 @@ class YoutubeAndDailyTests(unittest.TestCase):
         selected, next_cursor = _select_recheck_ids(
             ordered_video_ids=ordered,
             current_cursor=0,
-            limit=3,
+            recent_limit=2,
+            backlog_limit=1,
             recent_hours=72,
             videos_by_id=videos_by_id,
+            missing_timestamp_ids={"old1"},
         )
 
         self.assertEqual(selected[:2], ["new1", "new2"])
@@ -457,13 +462,55 @@ class YoutubeAndDailyTests(unittest.TestCase):
         selected, _ = _select_recheck_ids(
             ordered_video_ids=ordered,
             current_cursor=0,
-            limit=2,
+            recent_limit=2,
+            backlog_limit=0,
             recent_hours=72,
             videos_by_id=videos_by_id,
             exclude_video_ids={"new1"},
         )
 
         self.assertEqual(selected, ["old1", "old2"])
+
+    def test_recent_videos_are_not_starved_by_old_missing_timestamps(self):
+        now = datetime.now(timezone.utc)
+        ordered = ["old1", "old2", "old3", "recent"]
+        videos_by_id = {
+            "old1": VideoItem("old1", "old1", "", (now - timedelta(days=30)).isoformat(), ""),
+            "old2": VideoItem("old2", "old2", "", (now - timedelta(days=20)).isoformat(), ""),
+            "old3": VideoItem("old3", "old3", "", (now - timedelta(days=10)).isoformat(), ""),
+            "recent": VideoItem("recent", "recent", "", (now - timedelta(hours=80)).isoformat(), ""),
+        }
+
+        selected, next_cursor = _select_recheck_ids(
+            ordered_video_ids=ordered,
+            current_cursor=0,
+            recent_limit=10,
+            backlog_limit=2,
+            recent_hours=96,
+            videos_by_id=videos_by_id,
+            missing_timestamp_ids=set(ordered),
+        )
+
+        self.assertEqual(selected, ["recent", "old1", "old2"])
+        self.assertEqual(next_cursor, 2)
+
+    def test_recent_video_is_rechecked_even_after_timestamps_exist(self):
+        now = datetime.now(timezone.utc)
+        videos_by_id = {
+            "recent": VideoItem("recent", "recent", "", now.isoformat(), ""),
+        }
+
+        selected, _ = _select_recheck_ids(
+            ordered_video_ids=["recent"],
+            current_cursor=0,
+            recent_limit=10,
+            backlog_limit=15,
+            recent_hours=96,
+            videos_by_id=videos_by_id,
+            missing_timestamp_ids=set(),
+        )
+
+        self.assertEqual(selected, ["recent"])
 
 
 if __name__ == "__main__":
