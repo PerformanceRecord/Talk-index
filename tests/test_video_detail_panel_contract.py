@@ -26,6 +26,15 @@ class VideoDetailPanelContractTests(unittest.TestCase):
         self.assertIn('state.openVideoKeys = new Set([video.key]);', app_js)
         self.assertIn('refs.toggleAll.textContent = "詳細を閉じる";', app_js)
 
+    def test_mobile_video_detail_cannot_overflow_horizontally(self):
+        styles = Path('styles.css').read_text(encoding='utf-8')
+
+        self.assertIn('max-width: calc(100vw - 16px);', styles)
+        self.assertIn('overflow-x: hidden;', styles)
+        self.assertIn('.video-player-wrap {', styles)
+        self.assertIn('max-width: 100%;', styles)
+        self.assertIn('overflow-wrap: anywhere;', styles)
+
 
 if __name__ == '__main__':
     unittest.main()
