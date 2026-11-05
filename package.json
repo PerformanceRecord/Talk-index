@@ -12,6 +12,7 @@
     "validate:build-env": "node scripts/validate-build-env.mjs",
     "build": "node scripts/build-static.mjs",
     "preview:check": "node scripts/preview-check.mjs",
+    "test:actions-watchdog": "node --test workers/github-actions-watchdog/service.test.mjs",
     "ci:build": "npm run validate:build-env && npm run build && npm run preview:check"
   }
 }
