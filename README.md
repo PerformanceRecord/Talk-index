@@ -369,7 +369,7 @@ npm run ci:build
 ### 継続運用上の注意
 
 - GitHub Actions の予約実行は時刻どおりの開始を保証しません。混雑しやすい時0分を避け、17分開始にしています。
-- 公開リポジトリは60日間リポジトリ活動がないと予約ワークフローが自動停止します。少なくとも月1回、`Daily YouTube Crawl` の直近実行日時を確認してください。停止時は Actions 画面から再有効化し、`workflow_dispatch` で疎通確認します。
+- 公開リポジトリは60日間リポジトリ活動がないと予約ワークフローが自動停止します。`workers/github-actions-watchdog` が毎日 03:55 / 15:55 JST に状態を確認し、`disabled_inactivity` の場合だけ自動再有効化します。Cloudflare側の設定と復旧手順は `workers/github-actions-watchdog/README.md` を参照してください。
 - 監視対象は `Daily YouTube Crawl` と、その後に動く `Upload index JSON to R2` の両方です。前者が成功しても後者が失敗すると公開JSONは更新されません。
 
 

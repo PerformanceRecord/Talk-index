@@ -1,0 +1,13 @@
+name = "talk-index-actions-watchdog"
+main = "worker.mjs"
+compatibility_date = "2026-11-05"
+workers_dev = false
+
+[triggers]
+# 03:55 / 15:55 JST。GitHub Actions の 04:17 / 16:17 実行前に状態を確認する。
+crons = ["55 18 * * *", "55 6 * * *"]
+
+[vars]
+GITHUB_OWNER = "PerformanceRecord"
+GITHUB_REPOSITORY = "Talk-index"
+GITHUB_WORKFLOWS = "daily_crawl.yml,upload_index_json_to_r2.yml,rebuild_favorites_aggregates.yml,favorites_r2_to_sheet.yml"
